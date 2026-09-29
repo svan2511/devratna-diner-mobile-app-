@@ -13,7 +13,7 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { Brand, Fonts } from '@/constants/brand';
@@ -28,7 +28,7 @@ import { api, SessionExpiredError, type ApiHistoryOrder } from '@/lib/api';
 import {
   addPushReceivedListener,
   addPushResponseListener,
-  registerPushToken,
+  registerPushTokenDetailed,
   setupNotificationHandler,
 } from '@/lib/push';
 import * as Location from 'expo-location';
@@ -704,6 +704,8 @@ export default function HomeScreen() {
   const router = useRouter();
   const { ready, token, user, logout, dummyMode, forceLogout } = useAuth();
   const { lines, count, total, clear, add, removeLine } = useCart();
+  // System nav / gesture bar ke upar sheet button rahe — dev build me checkout dab gaya tha.
+  const insets = useSafeAreaInsets();
 
   const [tab, setTab] = useState<Tab>('home');
   const [menu, setMenu] = useState(MENU);
@@ -721,6 +723,9 @@ export default function HomeScreen() {
   // Category filter shimmer — brief skeleton when switching menu categories.
   const [filterLoading, setFilterLoading] = useState(false);
   // Checkout states — geofence + min order + Razorpay.
+  // validating = pehla click (shop/menu checks) → sirf button pe loader, koi overlay nahi.
+  // placingOrder = delivery popup ke baad (GPS + place order) → full overlay "Placing your order…".
+  const [validating, setValidating] = useState(false);
   const [placingOrder, setPlacingOrder] = useState(false);
   const [alert, setAlert] = useState<AppAlertData | null>(null);
   const showAlert = useCallback((title: string, message: string, type: AppAlertData['type'] = 'info') => {
@@ -849,24 +854,50 @@ export default function HomeScreen() {
     if (key === 'orders') loadOrders();
   }, [loadOrders]);
 
-  // Push token — login ke baad ek baar backend ko do (order status pushes ke liye).
-  const pushSent = useRef(false);
-  useEffect(() => {
-    if (!token || token === 'dummy-token' || dummyMode || pushSent.current) return;
-    pushSent.current = true;
-    (async () => {
-      const expoToken = await registerPushToken();
-      if (!expoToken) return;
-      try {
-        await api.pushToken(token, {
-          token: expoToken,
-          platform: Platform.OS === 'android' || Platform.OS === 'ios' ? Platform.OS : undefined,
-        });
-      } catch {
-        // Push na jude to app normal chalegi — status tab polling se dikhega.
+  // Push token — login ke baad backend ko do (order status pushes ke liye).
+  // Status Profile me dikhta hai taaki pata chale token gaya ya kahan atka.
+  const [pushState, setPushState] = useState<'checking' | 'on' | 'off'>('checking');
+  const [pushReason, setPushReason] = useState('');
+  const [pushBusy, setPushBusy] = useState(false);
+
+  const enablePush = useCallback(async () => {
+    if (!token || token === 'dummy-token' || dummyMode) {
+      setPushState('off');
+      setPushReason('Login karke try karo');
+      return false;
+    }
+    setPushBusy(true);
+    try {
+      const r = await registerPushTokenDetailed();
+      if (!r.ok) {
+        setPushState('off');
+        setPushReason(r.reason);
+        return false;
       }
-    })();
+      await api.pushToken(token, {
+        token: r.token,
+        platform: Platform.OS === 'android' || Platform.OS === 'ios' ? Platform.OS : undefined,
+      });
+      setPushState('on');
+      setPushReason('');
+      return true;
+    } catch {
+      setPushState('off');
+      setPushReason('Server pe save nahi hua');
+      return false;
+    } finally {
+      setPushBusy(false);
+    }
   }, [token, dummyMode]);
+
+  useEffect(() => {
+    if (!token || token === 'dummy-token' || dummyMode) {
+      setPushState('off');
+      setPushReason('Login ke baad auto try hoga');
+      return;
+    }
+    void enablePush();
+  }, [token, dummyMode, enablePush]);
 
   // Push aaye to: foreground me list refresh, tap pe Orders tab kholo.
   // (Expo Go me listeners null — kuch nahi hota, polling cover karta hai.)
@@ -1038,8 +1069,11 @@ export default function HomeScreen() {
   }, [token, user?.name, user?.phone, showAlert, forceLogout]);
 
   const startCheckout = useCallback(async () => {
-    if (placingOrder) return;
+    if (validating || placingOrder) return;
     if (lines.length === 0) return;
+    // Pehla click — sirf button pe loader (overlay nahi).
+    // "Placing your order…" overlay sirf delivery popup ke baad continueCheckout me ayega.
+    setValidating(true);
     // Fresh shop status — admin ne band kiya to yahi ruko (backend bhi guard karta hai).
     try {
       const s = await api.shopStatus();
@@ -1050,11 +1084,13 @@ export default function HomeScreen() {
           'We are not accepting orders right now. Please try again when we are open (7:30 AM – 11:00 PM).',
           'warning',
         );
+        setValidating(false);
         return;
       }
     } catch {
       if (!shopOpen) {
         showAlert('Shop is closed', 'We are not accepting orders right now. Please try again later.', 'warning');
+        setValidating(false);
         return;
       }
     }
@@ -1085,6 +1121,7 @@ export default function HomeScreen() {
           }`,
           'warning',
         );
+        setValidating(false);
         return;
       }
     } catch {
@@ -1096,6 +1133,7 @@ export default function HomeScreen() {
         'Ordering needs an internet connection to the Dev Ratna server. Please log in again when online.',
         'warning',
       );
+      setValidating(false);
       return;
     }
     if (total < SHOP.minOrder) {
@@ -1104,6 +1142,7 @@ export default function HomeScreen() {
         `Add food worth ₹${SHOP.minOrder - total} more (delivery ₹${SHOP.deliveryCharge} extra) to place your order.`,
         'warning',
       );
+      setValidating(false);
       return;
     }
     // Freeze the bill synchronously — everything after this (GPS wait,
@@ -1118,6 +1157,9 @@ export default function HomeScreen() {
       };
     };
     if (address.trim().length < 10) {
+      // Delivery popup kholna hai — button loader hatao, taaki user address type kar sake.
+      // Skip pe continueCheckout khud placingOrder lock + overlay dikhayega.
+      setValidating(false);
       setAlert({
         title: 'Add a delivery address?',
         message:
@@ -1137,9 +1179,11 @@ export default function HomeScreen() {
       });
       return;
     }
+    // Address pehle se hai — seedha placing phase (overlay ayega).
+    setValidating(false);
     freezeBill();
     void continueCheckout();
-  }, [placingOrder, lines, total, deliveryFee, payable, token, dummyMode, address, shopOpen, removeLine, showAlert, continueCheckout]);
+  }, [validating, placingOrder, lines, total, deliveryFee, payable, token, dummyMode, address, shopOpen, removeLine, showAlert, continueCheckout]);
 
   const handleRzpSuccess = useCallback(
     async (p: RazorpaySuccess) => {
@@ -1535,6 +1579,17 @@ export default function HomeScreen() {
               <Text style={styles.profileRowTitle}>Food preference</Text>
               <Text style={styles.profileRowSub}>Pure Veg • Always on</Text>
             </View>
+            <View style={styles.profileRow}>
+              <Text style={styles.profileRowTitle}>Order notifications</Text>
+              <Text style={styles.profileRowSub}>
+                {pushState === 'on' ? 'ON • status push ayegi' : pushState === 'off' ? `OFF • ${pushReason}` : 'Checking…'}
+              </Text>
+            </View>
+            {pushState === 'off' && (
+              <Pressable style={[styles.btn, pushBusy && styles.btnDisabled]} onPress={enablePush} disabled={pushBusy}>
+                <Text style={styles.btnText}>{pushBusy ? 'Trying…' : '🔔 Enable notifications'}</Text>
+              </Pressable>
+            )}
             <Pressable
               style={styles.logoutBtn}
               onPress={async () => {
@@ -1590,7 +1645,7 @@ export default function HomeScreen() {
           onPress={() => {
             if (!placingOrder) setCartOpen(false);
           }}>
-          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+          <Pressable style={[styles.sheet, { paddingBottom: Math.max(28, insets.bottom + 20) }]} onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHead}>
               <Text style={styles.sheetTitle}>Your Cart</Text>
@@ -1650,15 +1705,24 @@ export default function HomeScreen() {
               Min food order ₹{SHOP.minOrder} + ₹{SHOP.deliveryCharge} delivery • Within {radiusLabel()} of the shop
             </Text>
             <Pressable
-              style={[styles.btn, placingOrder && styles.btnDisabled]}
+              style={[styles.btn, styles.checkoutBtn, (validating || placingOrder) && styles.btnDisabled]}
               onPress={startCheckout}
-              disabled={placingOrder}>
-              <Text style={styles.btnText}>
-                {placingOrder ? 'Checking…' : `Proceed to Checkout • ₹${payable}`}
-              </Text>
+              disabled={validating || placingOrder}>
+              {(validating || placingOrder) ? (
+                <View style={styles.checkoutBusyRow}>
+                  <ActivityIndicator size="small" color={Brand.white} />
+                  <Text style={styles.btnText}>
+                    {validating ? 'Checking… Please wait' : 'Placing your order…'}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.btnText}>
+                  {`Proceed to Checkout • ₹${payable}`}
+                </Text>
+              )}
             </Pressable>
-            {/* Bill lock — blocks qty steppers, Clear, address edits and
-                the Proceed button while the frozen order is being placed. */}
+            {/* Placing lock — sirf delivery popup ke baad (GPS + place order) dikhega.
+                Pehle click (validating) me sirf button loader, koi overlay nahi. */}
             {placingOrder && (
               <View style={styles.lockOverlay}>
                 <ActivityIndicator size="large" color={Brand.cream} />
@@ -2200,7 +2264,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   btnText: { color: Brand.white, fontSize: 15, fontFamily: Fonts.bodyBold },
-  btnDisabled: { opacity: 0.6 },
+  btnDisabled: { opacity: 0.85 },
+  checkoutBtn: { minHeight: 52, justifyContent: 'center' },
+  checkoutBusyRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   gateHint: {
     marginTop: 12,
     textAlign: 'center',

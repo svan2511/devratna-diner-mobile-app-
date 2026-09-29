@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import { Brand, Fonts } from '@/constants/brand';
 
@@ -70,6 +71,8 @@ export function RazorpayCheckout({
   onError: (message: string, code?: string) => void;
 }) {
   const html = useMemo(() => (data ? buildHtml(data) : ''), [data]);
+  // Dev build me Continue/Pay button system nav ke neeche dab gaya tha — bottom inset do.
+  const insets = useSafeAreaInsets();
 
   const handleMessage = (e: WebViewMessageEvent) => {
     try {
@@ -95,7 +98,7 @@ export function RazorpayCheckout({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onCancel}>
-      <View style={s.root}>
+      <SafeAreaView style={s.root} edges={['top', 'bottom']}>
         <View style={s.head}>
           <Text style={s.headTitle}>Secure payment</Text>
           <Pressable onPress={onCancel} hitSlop={12}>
@@ -103,14 +106,16 @@ export function RazorpayCheckout({
           </Pressable>
         </View>
         {data ? (
-          <WebView
-            source={{ html, baseUrl: 'https://checkout.razorpay.com' }}
-            onMessage={handleMessage}
-            startInLoadingState
-            style={s.web}
-          />
+          <View style={[s.webWrap, { paddingBottom: Math.max(12, insets.bottom) }]}>
+            <WebView
+              source={{ html, baseUrl: 'https://checkout.razorpay.com' }}
+              onMessage={handleMessage}
+              startInLoadingState
+              style={s.web}
+            />
+          </View>
         ) : null}
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 }
@@ -129,5 +134,6 @@ const s = StyleSheet.create({
   },
   headTitle: { fontSize: 17, color: Brand.espresso, fontFamily: Fonts.bodyBold },
   headClose: { fontSize: 14, color: Brand.terracotta, fontFamily: Fonts.bodyBold },
+  webWrap: { flex: 1, backgroundColor: Brand.cream },
   web: { flex: 1, backgroundColor: Brand.cream },
 });

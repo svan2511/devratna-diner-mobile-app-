@@ -22,7 +22,8 @@
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
       ],
-      "package": "com.anil05.DevRatnaMobileApp"
+      "package": "com.anil05.DevRatnaMobileApp",
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "output": "static",
