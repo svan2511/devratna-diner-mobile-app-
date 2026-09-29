@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "626448913962",
+    "project_id": "devratnadiner",
+    "storage_bucket": "devratnadiner.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:626448913962:android:f834835400498c2c985553",
+        "android_client_info": {
+          "package_name": "com.anil05.DevRatnaMobileApp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC2mgyx5kbOhlab5FVe8zx8FAOhebdtcgU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
