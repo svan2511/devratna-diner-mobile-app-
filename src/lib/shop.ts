@@ -19,11 +19,11 @@ export const SHOP = {
   deliveryCharge: 40,
 };
 
-/** Display label — 1000 => "1 km", 500 => "500m". */
-export function radiusLabel(): string {
-  if (SHOP.radiusM >= 1000 && SHOP.radiusM % 1000 === 0) return `${SHOP.radiusM / 1000} km`;
-  if (SHOP.radiusM >= 1000) return `${(SHOP.radiusM / 1000).toFixed(1)} km`;
-  return `${SHOP.radiusM}m`;
+/** Display label — 1000 => "1 km", 500 => "500m". Pass live radius; default = bundled fallback. */
+export function radiusLabel(m: number = SHOP.radiusM): string {
+  if (m >= 1000 && m % 1000 === 0) return `${m / 1000} km`;
+  if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
+  return `${m}m`;
 }
 
 /** Haversine distance in metres between two lat/lng points. */

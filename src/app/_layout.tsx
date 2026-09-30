@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -14,6 +14,8 @@ import {
 import { AuthProvider } from '@/context/AuthContext';
 import { CartProvider } from '@/context/CartContext';
 import { AppSplash } from '@/components/app-splash';
+import { getInitialNotificationData } from '@/lib/push';
+import { isOrderPush, ordersTabFromPushData, setPendingOrdersTab } from '@/lib/notify-target';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -34,6 +36,23 @@ export default function RootLayout() {
     if (fontsLoaded || fontError) {
       SplashScreen.hideAsync().catch(() => {});
     }
+  }, [fontsLoaded, fontError]);
+
+  // Cold start via notification tap — app band thi. Target home pe
+  // consume hoga (orders tab + sahi sub-tab khulega).
+  useEffect(() => {
+    if (!fontsLoaded && !fontError) return;
+    (async () => {
+      try {
+        const data = await getInitialNotificationData();
+        if (data && isOrderPush(data)) {
+          setPendingOrdersTab(ordersTabFromPushData(data));
+          router.replace('/home');
+        }
+      } catch {
+        // ignore — normal launch
+      }
+    })();
   }, [fontsLoaded, fontError]);
 
   if (!fontsLoaded && !fontError) return null;

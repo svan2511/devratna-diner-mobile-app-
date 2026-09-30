@@ -109,11 +109,36 @@ export function addPushReceivedListener(cb: () => void): { remove: () => void } 
   }
 }
 
-export function addPushResponseListener(cb: () => void): { remove: () => void } | null {
+export function addPushResponseListener(
+  cb: (data: Record<string, unknown> | null) => void,
+): { remove: () => void } | null {
   const Notifications = loadNotifications();
   if (!Notifications) return null;
   try {
-    return Notifications.addNotificationResponseReceivedListener(cb);
+    return Notifications.addNotificationResponseReceivedListener((response) => {
+      try {
+        const data = (response?.notification?.request?.content?.data ?? null) as Record<string, unknown> | null;
+        cb(data);
+      } catch {
+        cb(null);
+      }
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cold start — app band thi aur user ne notification tap ki.
+ * _layout se ek baar padho, home mount pe consume hoga.
+ */
+export async function getInitialNotificationData(): Promise<Record<string, unknown> | null> {
+  const Notifications = loadNotifications();
+  if (!Notifications) return null;
+  try {
+    const response = await Notifications.getLastNotificationResponseAsync();
+    const data = response?.notification?.request?.content?.data ?? null;
+    return (data ?? null) as Record<string, unknown> | null;
   } catch {
     return null;
   }

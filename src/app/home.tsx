@@ -27,6 +27,11 @@ import { SHOP, distanceMetres, radiusLabel } from '@/lib/shop';
 import { AppAlert, type AppAlertData } from '@/components/app-alert';
 import { api, SessionExpiredError, type ApiHistoryOrder } from '@/lib/api';
 import {
+  consumePendingOrdersTab,
+  isOrderPush,
+  ordersTabFromPushData,
+} from '@/lib/notify-target';
+import {
   addPushReceivedListener,
   addPushResponseListener,
   registerPushTokenDetailed,
@@ -717,6 +722,24 @@ export default function HomeScreen() {
   const [offline, setOffline] = useState(false);
   // Admin dashboard switch — false = orders band, banner + checkout block.
   const [shopOpen, setShopOpen] = useState(true);
+  // Live shop rules — /shop-status se aate hain (admin Settings se turant badalte hain).
+  // SHOP.* sirf bundled fallback hai (offline/server-down pe).
+  const [shopCfg, setShopCfg] = useState({
+    radiusM: SHOP.radiusM,
+    minOrder: SHOP.minOrder,
+    deliveryCharge: SHOP.deliveryCharge,
+  });
+  /** Server values ko validate karke lagao — kachra aaye to purana rakho. */
+  const applyShopStatus = useCallback((s: { radius_m?: unknown; min_order?: unknown; delivery_charge?: unknown }) => {
+    setShopCfg((prev) => ({
+      radiusM: typeof s.radius_m === 'number' && Number.isFinite(s.radius_m) && s.radius_m >= 100 && s.radius_m <= 20000
+        ? Math.round(s.radius_m) : prev.radiusM,
+      minOrder: typeof s.min_order === 'number' && Number.isFinite(s.min_order) && s.min_order >= 0
+        ? Math.round(s.min_order) : prev.minOrder,
+      deliveryCharge: typeof s.delivery_charge === 'number' && Number.isFinite(s.delivery_charge) && s.delivery_charge >= 0
+        ? Math.round(s.delivery_charge) : prev.deliveryCharge,
+    }));
+  }, []);
   const [query, setQuery] = useState('');
   const [menuFilter, setMenuFilter] = useState('all');
   const [cartOpen, setCartOpen] = useState(false);
@@ -802,11 +825,11 @@ export default function HomeScreen() {
       const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const d = distanceMetres(pos.coords.latitude, pos.coords.longitude, SHOP.lat, SHOP.lng);
       setZoneDist(Math.round(d));
-      setZoneState(d <= SHOP.radiusM ? 'inside' : 'outside');
+      setZoneState(d <= shopCfg.radiusM ? 'inside' : 'outside');
     } catch {
       setZoneState('denied');
     }
-  }, []);
+  }, [shopCfg.radiusM]);
 
   // Profile kholte hi zone + orders count fresh (silent — koi shimmer nahi).
   useEffect(() => {
@@ -890,7 +913,10 @@ export default function HomeScreen() {
     api
       .shopStatus()
       .then((s) => {
-        if (alive) setShopOpen(s.shop_open);
+        if (alive) {
+          setShopOpen(s.shop_open);
+          applyShopStatus(s);
+        }
       })
       .catch(() => {});
     // A. Silent polling — khuli app me menu + status fresh rahe (koi shimmer nahi).
@@ -907,7 +933,10 @@ export default function HomeScreen() {
         .catch(() => {});
       api
         .shopStatus()
-        .then((s) => setShopOpen(s.shop_open))
+        .then((s) => {
+          setShopOpen(s.shop_open);
+          applyShopStatus(s);
+        })
         .catch(() => {});
     }, 25000);
     return () => {
@@ -981,16 +1010,26 @@ export default function HomeScreen() {
     void enablePush();
   }, [token, dummyMode, enablePush]);
 
-  // Push aaye to: foreground me list refresh, tap pe Orders tab kholo.
+  // Push aaye to: foreground me list refresh, tap pe relatable screen kholo.
   // (Expo Go me listeners null — kuch nahi hota, polling cover karta hai.)
+  // Tap data: {type: 'order_*', fulfillment_status?} → Orders tab + sahi sub-tab.
   const switchTabRef = useRef(switchTab);
   switchTabRef.current = switchTab;
   useEffect(() => {
+    // Cold start — app band thi, notification tap pe khuli.
+    const pending = consumePendingOrdersTab();
+    if (pending) {
+      switchTabRef.current('orders');
+      setOrdersTab(pending);
+    }
     const recv = addPushReceivedListener(() => {
       loadOrders(true);
     });
-    const resp = addPushResponseListener(() => {
+    const resp = addPushResponseListener((data) => {
+      if (data && !isOrderPush(data)) return;
+      loadOrders(true);
       switchTabRef.current('orders');
+      setOrdersTab(ordersTabFromPushData(data));
     });
     return () => {
       recv?.remove();
@@ -1069,8 +1108,8 @@ export default function HomeScreen() {
     return live.length > 0 ? live : BESTSELLERS;
   }, [menu]);
 
-  /** Food subtotal = total, fixed ₹40 delivery, payable = subtotal + delivery. */
-  const deliveryFee = lines.length > 0 ? SHOP.deliveryCharge : 0;
+  /** Food subtotal = total, delivery (live) , payable = subtotal + delivery. */
+  const deliveryFee = lines.length > 0 ? shopCfg.deliveryCharge : 0;
   const payable = total + deliveryFee;
   /** Profile summary — paid orders ka kharcha. */
   const orderCount = orders.filter((o) => o.status === 'paid').length;
@@ -1110,7 +1149,7 @@ export default function HomeScreen() {
   const showFilterShimmer = filterLoading && !menuLoading && !tabLoading;
 
   /**
-   * Checkout flow — condition 1 (1 km geofence) + condition 2 (₹500 min food),
+   * Checkout flow — live geofence + live min food (admin Settings se),
    * then Razorpay order (backend) → payment → verify → confirm.
    * Address is optional landmark-only — eligibility is decided by live GPS.
    *
@@ -1126,7 +1165,7 @@ export default function HomeScreen() {
       if (status !== 'granted') {
         showAlert(
           'Location needed',
-          `We need your location to confirm you are within the ${radiusLabel()} delivery area.`,
+          `We need your location to confirm you are within the ${radiusLabel(shopCfg.radiusM)} delivery area.`,
           'warning',
         );
         return;
@@ -1135,10 +1174,10 @@ export default function HomeScreen() {
       const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       const { latitude, longitude } = pos.coords;
       const dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
-      if (dist > SHOP.radiusM) {
+      if (dist > shopCfg.radiusM) {
         showAlert(
           'Outside delivery area',
-          `We deliver within ${radiusLabel()} of Dev Ratna Diner only. Please order when you are nearby.`,
+          `We deliver within ${radiusLabel(shopCfg.radiusM)} of Dev Ratna Diner only. Please order when you are nearby.`,
           'error',
         );
         return;
@@ -1162,7 +1201,7 @@ export default function HomeScreen() {
       snapRef.current = null;
       setPlacingOrder(false);
     }
-  }, [token, user?.name, user?.phone, showAlert, forceLogout]);
+  }, [token, user?.name, user?.phone, showAlert, forceLogout, shopCfg.radiusM]);
 
   const startCheckout = useCallback(async () => {
     if (validating || placingOrder) return;
@@ -1170,10 +1209,16 @@ export default function HomeScreen() {
     // Pehla click — sirf button pe loader (overlay nahi).
     // "Placing your order…" overlay sirf delivery popup ke baad continueCheckout me ayega.
     setValidating(true);
-    // Fresh shop status — admin ne band kiya to yahi ruko (backend bhi guard karta hai).
+    // Fresh shop rules — admin ne band/rate change kiya to yahi ruko (backend bhi guard karta hai).
+    // Isi flow me fresh values turant lagao (state async hai, agli baar se apne aap fresh).
+    let liveMin = shopCfg.minOrder;
+    let liveCharge = shopCfg.deliveryCharge;
     try {
       const s = await api.shopStatus();
       setShopOpen(s.shop_open);
+      applyShopStatus(s);
+      if (typeof s.min_order === 'number' && Number.isFinite(s.min_order) && s.min_order >= 0) liveMin = Math.round(s.min_order);
+      if (typeof s.delivery_charge === 'number' && Number.isFinite(s.delivery_charge) && s.delivery_charge >= 0) liveCharge = Math.round(s.delivery_charge);
       if (!s.shop_open) {
         showAlert(
           'Shop is closed',
@@ -1232,10 +1277,10 @@ export default function HomeScreen() {
       setValidating(false);
       return;
     }
-    if (total < SHOP.minOrder) {
+    if (total < liveMin) {
       showAlert(
-        `Minimum order ₹${SHOP.minOrder}`,
-        `Add food worth ₹${SHOP.minOrder - total} more (delivery ₹${SHOP.deliveryCharge} extra) to place your order.`,
+        `Minimum order ₹${liveMin}`,
+        `Add food worth ₹${liveMin - total} more (delivery ₹${liveCharge} extra) to place your order.`,
         'warning',
       );
       setValidating(false);
@@ -1243,12 +1288,13 @@ export default function HomeScreen() {
     }
     // Freeze the bill synchronously — everything after this (GPS wait,
     // place order) runs on the snapshot, immune to mid-flight edits.
+    const liveDeliveryFee = lines.length > 0 ? liveCharge : 0;
     const freezeBill = () => {
       snapRef.current = {
         lines: lines.map((l) => ({ ...l })),
         total,
-        deliveryFee,
-        payable,
+        deliveryFee: liveDeliveryFee,
+        payable: total + liveDeliveryFee,
         address: address.trim(),
       };
     };
@@ -1279,7 +1325,7 @@ export default function HomeScreen() {
     setValidating(false);
     freezeBill();
     void continueCheckout();
-  }, [validating, placingOrder, lines, total, deliveryFee, payable, token, dummyMode, address, shopOpen, removeLine, showAlert, continueCheckout]);
+  }, [validating, placingOrder, lines, total, token, dummyMode, address, shopOpen, shopCfg, applyShopStatus, removeLine, showAlert, continueCheckout]);
 
   const handleRzpSuccess = useCallback(
     async (p: RazorpaySuccess) => {
@@ -1730,7 +1776,7 @@ export default function HomeScreen() {
                   : zoneState === 'inside'
                     ? `📍 Within delivery area${zoneDist != null ? ` • ${zoneDist >= 1000 ? `${(zoneDist / 1000).toFixed(1)} km` : `${zoneDist} m`} from the shop` : ''} — you can order now!`
                     : zoneState === 'outside'
-                      ? `You are ${zoneDist != null ? (zoneDist >= 1000 ? `${(zoneDist / 1000).toFixed(1)} km` : `${zoneDist} m`) : 'too far'} from the shop — please order when you are within ${radiusLabel()}.`
+                      ? `You are ${zoneDist != null ? (zoneDist >= 1000 ? `${(zoneDist / 1000).toFixed(1)} km` : `${zoneDist} m`) : 'too far'} from the shop — please order when you are within ${radiusLabel(shopCfg.radiusM)}.`
                       : zoneState === 'denied'
                         ? 'Location is off — allow it in Settings, then tap Check.'
                         : 'Check whether the shop delivers to your location.'}
@@ -1903,7 +1949,7 @@ export default function HomeScreen() {
               </View>
             </View>
             <Text style={styles.gateHint}>
-              Min food order ₹{SHOP.minOrder} + ₹{SHOP.deliveryCharge} delivery • Within {radiusLabel()} of the shop
+              Min food order ₹{shopCfg.minOrder} + ₹{shopCfg.deliveryCharge} delivery • Within {radiusLabel(shopCfg.radiusM)} of the shop
             </Text>
             <Pressable
               style={[styles.btn, styles.checkoutBtn, (validating || placingOrder) && styles.btnDisabled]}
