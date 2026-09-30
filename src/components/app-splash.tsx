@@ -53,7 +53,7 @@ export function AppSplash({ onDone }: { onDone: () => void }) {
   return (
     <Animated.View style={[s.root, { opacity }]}>
       <Animated.View style={{ transform: [{ scale: logoScale }], opacity: logoOpacity }}>
-        <Image source={require('@/assets/images/logo.png')} style={s.logo} resizeMode="contain" />
+        <Image source={require('@/assets/images/icon.png')} style={s.logo} resizeMode="contain" />
       </Animated.View>
       <Animated.View style={{ opacity: tagOpacity }}>
         <Text style={s.tag}>GOOD FOOD • HAPPY MOOD</Text>

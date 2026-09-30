@@ -58,7 +58,7 @@ export default function SplashScreen() {
         <Animated.View style={[styles.ring, ringStyle]} />
         <Animated.View style={logoStyle}>
           <Image
-            source={require('@/assets/images/logo.png')}
+            source={require('@/assets/images/icon.png')}
             style={styles.logo}
             resizeMode="contain"
           />

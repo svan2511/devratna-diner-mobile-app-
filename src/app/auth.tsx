@@ -196,7 +196,7 @@ export default function AuthScreen() {
         <View style={styles.wrap}>
           <View style={styles.brand}>
             <Image
-              source={require('@/assets/images/logo.png')}
+              source={require('@/assets/images/icon.png')}
               style={styles.logo}
               resizeMode="contain"
             />
