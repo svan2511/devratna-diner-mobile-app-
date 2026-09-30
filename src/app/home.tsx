@@ -632,10 +632,10 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
             <Text style={styles.receiptLbl}>Delivery</Text>
             <Text style={styles.receiptVal}>₹{delivery}</Text>
           </View>
-          <View style={[styles.receiptRow, styles.receiptTotal]}>
-            <Text style={styles.orderTotalLabel}>Total paid</Text>
-            <Text style={styles.orderTotalValue}>₹{order.total}</Text>
-          </View>
+            <View style={[styles.receiptRow, styles.receiptTotal]}>
+              <Text style={styles.orderTotalLabel}>Total amount</Text>
+              <Text style={styles.orderTotalValue}>₹{order.total}</Text>
+            </View>
         </View>
 
         {order.status === 'paid' && !cancelled && (
@@ -1073,15 +1073,17 @@ export default function HomeScreen() {
   const deliveryFee = lines.length > 0 ? SHOP.deliveryCharge : 0;
   const payable = total + deliveryFee;
   /** Profile summary — paid orders ka kharcha. */
-  const orderCount = orders.length;
+  const orderCount = orders.filter((o) => o.status === 'paid').length;
   const orderSpent = orders.filter((o) => o.status === 'paid').reduce((s, o) => s + o.total, 0);
+  /** Orders tab me SIRF fully-paid orders — pending/failed kabhi nahi dikhenge. */
+  const paidOrders = orders.filter((o) => o.status === 'paid');
   /** Orders tab split — delivered/cancelled Active se hat ke Past me jate hain. */
   const isPastOrder = (o: ApiHistoryOrder) => {
     const f = o.fulfillment_status ?? 'new';
     return f === 'delivered' || f === 'cancelled';
   };
-  const activeOrders = orders.filter((o) => !isPastOrder(o));
-  const pastOrders = orders.filter(isPastOrder);
+  const activeOrders = paidOrders.filter((o) => !isPastOrder(o));
+  const pastOrders = paidOrders.filter(isPastOrder);
   const shownOrders = ordersTab === 'active' ? activeOrders : pastOrders;
 
   if (!ready || !token) {
@@ -1648,26 +1650,26 @@ export default function HomeScreen() {
                 </Text>
               </Pressable>
             </View>
-            {ordersLoading && orders.length === 0 ? (
+            {ordersLoading && paidOrders.length === 0 ? (
               <ActivityIndicator size="large" color={Brand.terracotta} style={styles.ordersLoader} />
             ) : shownOrders.length === 0 ? (
               <View style={styles.empty}>
                 <Text style={styles.emptyGlyph}>{ordersTab === 'active' ? '🎉' : '◷'}</Text>
                 <Text style={styles.emptyTitle}>
-                  {orders.length === 0
+                  {paidOrders.length === 0
                     ? 'No orders yet'
                     : ordersTab === 'active'
                       ? 'No active orders'
                       : 'No delivered orders yet'}
                 </Text>
                 <Text style={styles.emptyText}>
-                  {orders.length === 0
+                  {paidOrders.length === 0
                     ? 'Your delicious orders will appear here.'
                     : ordersTab === 'active'
                       ? 'Sab order deliver ho gaye — naya order karo!'
                       : 'Delivered orders yaha dikhenge.'}
                 </Text>
-                {orders.length === 0 && (
+                {paidOrders.length === 0 && (
                   <Pressable
                     style={styles.btn}
                     onPress={() => {

@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "DevRatnaMobileApp",
+    "name": "Dev Ratna Diner",
     "slug": "DevRatnaMobileApp",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -44,7 +44,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
+          "icon": "./assets/images/notification-icon.png",
           "color": "#C65D3A",
           "sounds": ["./assets/sounds/order_alert.wav"]
         }
