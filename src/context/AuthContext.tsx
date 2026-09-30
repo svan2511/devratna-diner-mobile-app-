@@ -7,8 +7,8 @@ const TOKEN_KEY = 'devratna.auth.token';
 
 /**
  * Dummy fallback so the UI flow stays testable while the backend is offline.
- * When the backend is reachable, the real OTP is used — verified either with
- * the `dev_otp` from the response or the fixed code 123456 (local env only).
+ * When the backend is reachable, the real OTP is used (OTP sirf server
+ * log me likha jata hai — screen pe koi dev code nahi dikhta).
  */
 const DEV_FALLBACK_OTP = '1234';
 
@@ -20,6 +20,7 @@ type AuthState = {
   dummyMode: boolean;
   requestOtp: (phone: string) => Promise<{ devOtp?: string; expiresIn: number }>;
   verifyOtp: (phone: string, otp: string, name?: string) => Promise<{ isNew: boolean }>;
+  updateProfile: (body: { name?: string; default_address?: string | null }) => Promise<void>;
   logout: () => Promise<void>;
   /** Clear the local session without hitting the server — for 401 (expired/revoked token). */
   forceLogout: () => Promise<void>;
@@ -95,18 +96,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await saveToken(res.token);
         return { isNew: res.is_new };
       } catch (e) {
-        // Dummy fallback: local login with 123456 + name.
+        // Dummy fallback: local login with 1234 (backend unreachable).
+        // Name yaha nahi manga jata — profile screen me baad me set hota hai.
         if (otp === DEV_FALLBACK_OTP) {
           setDummyMode(true);
           const localUser: ApiUser = {
             id: Date.now(),
             name: name?.trim() ? name.trim() : user?.name ?? null,
             phone,
+            default_address: user?.default_address ?? null,
             phone_verified: true,
             is_profile_complete: Boolean(name?.trim() || user?.name),
           };
-          // A name is required for a first-time dummy login.
-          if (!localUser.name) throw e instanceof Error ? e : new Error('Please enter your name.');
           setUser(localUser);
           setToken('dummy-token');
           await saveToken('dummy-token');
@@ -116,6 +117,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [user?.name],
+  );
+
+  const updateProfile = useCallback(
+    async (body: { name?: string; default_address?: string | null }) => {
+      if (!token || token === 'dummy-token' || dummyMode) {
+        // Offline dummy session — sirf local user update.
+        setUser((u) =>
+          u
+            ? {
+                ...u,
+                name: body.name?.trim() ? body.name.trim() : u.name,
+                default_address:
+                  body.default_address !== undefined ? body.default_address || null : u.default_address ?? null,
+                is_profile_complete: Boolean(body.name?.trim() || u.name),
+              }
+            : u,
+        );
+        return;
+      }
+      const res = await api.updateProfile(token, body);
+      setUser(res.user);
+    },
+    [token, dummyMode],
   );
 
   const logout = useCallback(async () => {
@@ -138,8 +162,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ token, user, ready, dummyMode, requestOtp, verifyOtp, logout, forceLogout }),
-    [token, user, ready, dummyMode, requestOtp, verifyOtp, logout, forceLogout],
+    () => ({ token, user, ready, dummyMode, requestOtp, verifyOtp, updateProfile, logout, forceLogout }),
+    [token, user, ready, dummyMode, requestOtp, verifyOtp, updateProfile, logout, forceLogout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

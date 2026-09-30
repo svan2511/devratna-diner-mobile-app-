@@ -31,19 +31,17 @@ function isValidPhone(p: string): boolean {
 }
 
 /**
- * Single-screen auth: phone number -> 6-box OTP (+ name on first visit).
+ * Single-screen auth: phone number -> 4-box OTP.
  * Light premium restaurant styling: warm cream canvas, dark readable text,
  * Marcellus wordmark + Outfit UI, terracotta CTA.
  */
 export default function AuthScreen() {
   const router = useRouter();
-  const { token, ready, dummyMode, requestOtp, verifyOtp } = useAuth();
+  const { token, ready, requestOtp, verifyOtp } = useAuth();
 
   const [step, setStep] = useState<Step>('phone');
   const [phone, setPhone] = useState('');
   const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
-  const [name, setName] = useState('');
-  const [devOtp, setDevOtp] = useState<string | undefined>(undefined);
   const [cooldown, setCooldown] = useState(0);
   const [validLeft, setValidLeft] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -91,7 +89,6 @@ export default function AuthScreen() {
     setDigits(Array(OTP_LENGTH).fill(''));
     boxRefs.current.forEach((b) => b?.blur());
     verifyingRef.current = false;
-    setDevOtp(undefined);
     setError('This code has expired. Tap "Resend code" for a new one.');
   }, [step, validLeft]);
 
@@ -110,7 +107,6 @@ export default function AuthScreen() {
     try {
       const res = await requestOtp(clean);
       setPhone(clean);
-      setDevOtp(res.devOtp);
       setDigits(Array(OTP_LENGTH).fill(''));
       verifyingRef.current = false;
       setStep('otp');
@@ -139,7 +135,7 @@ export default function AuthScreen() {
     setError(null);
     setLoading(true);
     try {
-      await verifyOtp(phone, finalCode, name.trim() ? name.trim() : undefined);
+      await verifyOtp(phone, finalCode);
       router.replace('/home');
     } catch (e) {
       verifyingRef.current = false;
@@ -300,32 +296,6 @@ export default function AuthScreen() {
                     ? `Code expires in ${formatTime(validLeft)}`
                     : 'Code expired — request a new one'}
                 </Text>
-
-                <Text style={styles.label}>Your name (first visit)</Text>
-                <TextInput
-                  value={name}
-                  onChangeText={setName}
-                  placeholder="e.g. Aarav Sharma"
-                  placeholderTextColor="#B4A69E"
-                  style={styles.nameInput}
-                  maxLength={100}
-                  editable={!loading}
-                  autoCapitalize="words"
-                />
-
-                {devOtp ? (
-                  <View style={styles.devBox}>
-                    <Text style={styles.devTitle}>Development code: {devOtp}</Text>
-                    <Text style={styles.devSub}>
-                      Shown because the SMS provider is not connected yet.
-                    </Text>
-                  </View>
-                ) : null}
-                {dummyMode && !devOtp ? (
-                  <Text style={styles.hint}>
-                    The server is unreachable — demo mode is on (use 1234).
-                  </Text>
-                ) : null}
 
                 {error ? (
                   <View style={styles.errorBox}>
@@ -514,47 +484,6 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.bodySemi,
   },
   expiryUrgent: { color: '#B3261E' },
-  nameInput: {
-    marginTop: 10,
-    backgroundColor: Brand.creamRich,
-    borderWidth: 1.5,
-    borderColor: Brand.bone,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    height: 54,
-    fontSize: 16,
-    color: Brand.espresso,
-    fontFamily: Fonts.body,
-  },
-  devBox: {
-    marginTop: 14,
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-    borderColor: Brand.gold,
-    backgroundColor: '#FFFBF2',
-    borderRadius: 14,
-    padding: 12,
-  },
-  devTitle: {
-    textAlign: 'center',
-    fontSize: 15,
-    color: Brand.terracotta,
-    fontFamily: Fonts.bodyBold,
-  },
-  devSub: {
-    marginTop: 2,
-    textAlign: 'center',
-    fontSize: 12,
-    color: Brand.stone,
-    fontFamily: Fonts.body,
-  },
-  hint: {
-    marginTop: 12,
-    fontSize: 12,
-    color: Brand.stone,
-    textAlign: 'center',
-    fontFamily: Fonts.body,
-  },
   errorBox: {
     marginTop: 14,
     backgroundColor: '#FDECEA',

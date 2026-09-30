@@ -8,9 +8,10 @@
     "scheme": "devratnamobileapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/icon.png"
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -36,15 +37,16 @@
         {
           "backgroundColor": "#FFF8EE",
           "image": "./assets/images/logo.png",
-          "imageWidth": 120
+          "imageWidth": 200
         }
       ],
       "expo-secure-store",
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
-          "color": "#C65D3A"
+          "icon": "./assets/images/logo.png",
+          "color": "#C65D3A",
+          "sounds": ["./assets/sounds/order_alert.wav"]
         }
       ],
       [

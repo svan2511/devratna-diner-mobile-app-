@@ -11,11 +11,13 @@
 // }
 
 export const API_BASE_URL = 'http://10.35.185.212:8000/api/v1';
+//export const API_BASE_URL = 'https://devratna-apis.onrender.com/api/v1';
 
 export type ApiUser = {
   id: number;
   name: string | null;
   phone: string;
+  default_address: string | null;
   phone_verified: boolean;
   is_profile_complete: boolean;
 };
@@ -140,6 +142,30 @@ async function getJson<T>(path: string, token: string): Promise<T> {
   return json.data as T;
 }
 
+async function putJson<T>(path: string, body: unknown, token: string): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => null)) as ApiEnvelope<T> | null;
+  if (res.status === 401 || res.status === 419) throw new SessionExpiredError();
+  if (!res.ok || !json?.success) {
+    const fallback = `Request failed (${res.status}).`;
+    const lines: string[] = [json?.message ?? fallback];
+    if (json?.errors) {
+      for (const group of Object.values(json.errors)) lines.push(...group);
+    }
+    const unique = lines.filter((line, i) => line.length > 0 && lines.indexOf(line) === i);
+    throw new Error(unique.join('\n'));
+  }
+  return json.data as T;
+}
+
 async function getPublic<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
@@ -165,6 +191,9 @@ export const api = {
   },
   me(token: string) {
     return getJson<{ user: ApiUser }>('/auth/me', token);
+  },
+  updateProfile(token: string, body: { name?: string; default_address?: string | null }) {
+    return putJson<{ user: ApiUser }>('/auth/profile', body, token);
   },
   logout(token: string) {
     return postJson<null>('/auth/logout', {}, token);

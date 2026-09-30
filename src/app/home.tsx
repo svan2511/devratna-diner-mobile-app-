@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -416,10 +417,14 @@ function AddControl({ item, portion }: { item: MenuItem; portion?: Portion }) {
  * description + portion ADD. Opens on tapping any dish photo/name.
  */
 function DishDetailModal({ item, onClose }: { item: MenuItem | null; onClose: () => void }) {
+  // Sheet buttons system nav ke neeche na dabe — bottom safe-area do.
+  const { bottom } = useSafeAreaInsets();
   return (
     <Modal visible={item !== null} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.detailBg} onPress={onClose}>
-        <Pressable style={styles.detailSheet} onPress={(e) => e.stopPropagation()}>
+        <Pressable
+          style={[styles.detailSheet, { paddingBottom: Math.max(28, bottom + 20) }]}
+          onPress={(e) => e.stopPropagation()}>
           <View style={styles.sheetHandle} />
           {item ? (
             <>
@@ -702,7 +707,7 @@ const OfferCarousel = memo(function OfferCarousel({ onPress }: { onPress: (filte
  */
 export default function HomeScreen() {
   const router = useRouter();
-  const { ready, token, user, logout, dummyMode, forceLogout } = useAuth();
+  const { ready, token, user, logout, dummyMode, forceLogout, updateProfile } = useAuth();
   const { lines, count, total, clear, add, removeLine } = useCart();
   // System nav / gesture bar ke upar sheet button rahe — dev build me checkout dab gaya tha.
   const insets = useSafeAreaInsets();
@@ -727,6 +732,13 @@ export default function HomeScreen() {
   // placingOrder = delivery popup ke baad (GPS + place order) → full overlay "Placing your order…".
   const [validating, setValidating] = useState(false);
   const [placingOrder, setPlacingOrder] = useState(false);
+  // Profile states — editable naam + default address (server pe save hota hai).
+  const [profileName, setProfileName] = useState('');
+  const [profileAddr, setProfileAddr] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
+  // Delivery zone — profile kholte hi live GPS se check.
+  const [zoneState, setZoneState] = useState<'idle' | 'checking' | 'inside' | 'outside' | 'denied'>('idle');
+  const [zoneDist, setZoneDist] = useState<number | null>(null);
   const [alert, setAlert] = useState<AppAlertData | null>(null);
   const showAlert = useCallback((title: string, message: string, type: AppAlertData['type'] = 'info') => {
     setAlert({ title, message, type });
@@ -735,6 +747,8 @@ export default function HomeScreen() {
   // Order history states.
   const [orders, setOrders] = useState<ApiHistoryOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
+  // Active = abhi kaam chal raha hai (delivered/cancelled yaha nahi dikhte).
+  const [ordersTab, setOrdersTab] = useState<'active' | 'past'>('active');
   const loadOrders = useCallback(async (silent = false) => {
     if (!token || token === 'dummy-token') {
       setOrders([]);
@@ -764,6 +778,74 @@ export default function HomeScreen() {
     }, 10000);
     return () => clearInterval(t);
   }, [tab, loadOrders]);
+
+  // Profile inputs server ke user se sync (ek user ke liye ek baar — typing beech me nahi kategi).
+  useEffect(() => {
+    setProfileName(user?.name ?? '');
+    setProfileAddr(user?.default_address ?? '');
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Checkout me default address auto-fill — khud typed address kabhi overwrite nahi hoga.
+  useEffect(() => {
+    if (address === '' && user?.default_address) setAddress(user.default_address);
+  }, [user?.default_address, address]);
+
+  /** Live delivery-zone check — profile kholte hi + Check button pe. */
+  const checkZone = useCallback(async () => {
+    setZoneState('checking');
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setZoneState('denied');
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const d = distanceMetres(pos.coords.latitude, pos.coords.longitude, SHOP.lat, SHOP.lng);
+      setZoneDist(Math.round(d));
+      setZoneState(d <= SHOP.radiusM ? 'inside' : 'outside');
+    } catch {
+      setZoneState('denied');
+    }
+  }, []);
+
+  // Profile kholte hi zone + orders count fresh (silent — koi shimmer nahi).
+  useEffect(() => {
+    if (tab !== 'profile') return;
+    void checkZone();
+    void loadOrders(true);
+  }, [tab, checkZone, loadOrders]);
+
+  /** Naam + default address server pe save. */
+  const saveProfile = useCallback(async () => {
+    if (savingProfile) return;
+    const nm = profileName.trim();
+    const ad = profileAddr.trim();
+    if (nm.length < 2) {
+      showAlert('Name too short', 'Please enter your name (at least 2 characters).', 'warning');
+      return;
+    }
+    if (ad !== '' && ad.length < 10) {
+      showAlert(
+        'Incomplete address',
+        'Write at least 10 characters with house number + landmark — or leave it empty.',
+        'warning',
+      );
+      return;
+    }
+    setSavingProfile(true);
+    try {
+      await updateProfile({ name: nm, default_address: ad === '' ? null : ad });
+      showAlert('Profile saved!', 'Your name and delivery address have been saved.', 'success');
+    } catch (e) {
+      if (e instanceof SessionExpiredError) {
+        await forceLogout();
+        return;
+      }
+      showAlert('Could not save', e instanceof Error ? e.message : 'Please try again.', 'error');
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [savingProfile, profileName, profileAddr, updateProfile, showAlert, forceLogout]);
   const [rzpOrderId, setRzpOrderId] = useState<number | null>(null);
   const [rzpData, setRzpData] = useState<RazorpayCheckoutData | null>(null);
   const paymentDoneRef = useRef(false);
@@ -863,7 +945,7 @@ export default function HomeScreen() {
   const enablePush = useCallback(async () => {
     if (!token || token === 'dummy-token' || dummyMode) {
       setPushState('off');
-      setPushReason('Login karke try karo');
+      setPushReason('Please log in and try again');
       return false;
     }
     setPushBusy(true);
@@ -883,7 +965,7 @@ export default function HomeScreen() {
       return true;
     } catch {
       setPushState('off');
-      setPushReason('Server pe save nahi hua');
+      setPushReason('Could not save on the server');
       return false;
     } finally {
       setPushBusy(false);
@@ -893,7 +975,7 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!token || token === 'dummy-token' || dummyMode) {
       setPushState('off');
-      setPushReason('Login ke baad auto try hoga');
+      setPushReason('Will try automatically after login');
       return;
     }
     void enablePush();
@@ -990,6 +1072,17 @@ export default function HomeScreen() {
   /** Food subtotal = total, fixed ₹40 delivery, payable = subtotal + delivery. */
   const deliveryFee = lines.length > 0 ? SHOP.deliveryCharge : 0;
   const payable = total + deliveryFee;
+  /** Profile summary — paid orders ka kharcha. */
+  const orderCount = orders.length;
+  const orderSpent = orders.filter((o) => o.status === 'paid').reduce((s, o) => s + o.total, 0);
+  /** Orders tab split — delivered/cancelled Active se hat ke Past me jate hain. */
+  const isPastOrder = (o: ApiHistoryOrder) => {
+    const f = o.fulfillment_status ?? 'new';
+    return f === 'delivered' || f === 'cancelled';
+  };
+  const activeOrders = orders.filter((o) => !isPastOrder(o));
+  const pastOrders = orders.filter(isPastOrder);
+  const shownOrders = ordersTab === 'active' ? activeOrders : pastOrders;
 
   if (!ready || !token) {
     return (
@@ -1036,7 +1129,8 @@ export default function HomeScreen() {
         );
         return;
       }
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      // Order-time exact pin — delivery isi pe hogi, isliye High accuracy.
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       const { latitude, longitude } = pos.coords;
       const dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
       if (dist > SHOP.radiusM) {
@@ -1538,24 +1632,54 @@ export default function HomeScreen() {
                 <Text style={styles.seeAll}>{ordersLoading ? 'Refreshing…' : 'Refresh'}</Text>
               </Pressable>
             </View>
+            <View style={styles.ordersTabs}>
+              <Pressable
+                style={[styles.chip, ordersTab === 'active' && styles.chipActive]}
+                onPress={() => setOrdersTab('active')}>
+                <Text style={[styles.chipText, ordersTab === 'active' && styles.chipTextActive]}>
+                  Active ({activeOrders.length})
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.chip, ordersTab === 'past' && styles.chipActive]}
+                onPress={() => setOrdersTab('past')}>
+                <Text style={[styles.chipText, ordersTab === 'past' && styles.chipTextActive]}>
+                  Delivered ({pastOrders.length})
+                </Text>
+              </Pressable>
+            </View>
             {ordersLoading && orders.length === 0 ? (
               <ActivityIndicator size="large" color={Brand.terracotta} style={styles.ordersLoader} />
-            ) : orders.length === 0 ? (
+            ) : shownOrders.length === 0 ? (
               <View style={styles.empty}>
-                <Text style={styles.emptyGlyph}>◷</Text>
-                <Text style={styles.emptyTitle}>No orders yet</Text>
-                <Text style={styles.emptyText}>Your delicious orders will appear here.</Text>
-                <Pressable
-                  style={styles.btn}
-                  onPress={() => {
-                    setQuery('');
-                    switchTab('home');
-                  }}>
-                  <Text style={styles.btnText}>Browse menu</Text>
-                </Pressable>
+                <Text style={styles.emptyGlyph}>{ordersTab === 'active' ? '🎉' : '◷'}</Text>
+                <Text style={styles.emptyTitle}>
+                  {orders.length === 0
+                    ? 'No orders yet'
+                    : ordersTab === 'active'
+                      ? 'No active orders'
+                      : 'No delivered orders yet'}
+                </Text>
+                <Text style={styles.emptyText}>
+                  {orders.length === 0
+                    ? 'Your delicious orders will appear here.'
+                    : ordersTab === 'active'
+                      ? 'Sab order deliver ho gaye — naya order karo!'
+                      : 'Delivered orders yaha dikhenge.'}
+                </Text>
+                {orders.length === 0 && (
+                  <Pressable
+                    style={styles.btn}
+                    onPress={() => {
+                      setQuery('');
+                      switchTab('home');
+                    }}>
+                    <Text style={styles.btnText}>Browse menu</Text>
+                  </Pressable>
+                )}
               </View>
             ) : (
-              orders.map((o) => (
+              shownOrders.map((o) => (
                 <OrderCard key={o.id} order={o} />
               ))
             )}
@@ -1568,13 +1692,84 @@ export default function HomeScreen() {
               <View style={styles.profileAvatar}>
                 <Text style={styles.profileAvatarText}>{initial}</Text>
               </View>
-              <Text style={styles.profileName}>{user?.name ?? 'Guest Foodie'}</Text>
-              <Text style={styles.profilePhone}>+91 {user?.phone ?? ''}</Text>
+              <Text style={styles.profileLabel}>Your name</Text>
+              <TextInput
+                value={profileName}
+                onChangeText={setProfileName}
+                placeholder="Your name"
+                placeholderTextColor="#B4A69E"
+                style={styles.profileNameInput}
+                maxLength={100}
+              />
+              <View style={styles.verifiedRow}>
+                <Text style={styles.profilePhone}>+91 {user?.phone ?? ''}</Text>
+                <View style={styles.verifiedBadge}>
+                  <Text style={styles.verifiedText}>✓ Verified</Text>
+                </View>
+              </View>
             </View>
             <View style={styles.profileRow}>
-              <Text style={styles.profileRowTitle}>Delivery address</Text>
-              <Text style={styles.profileRowSub}>Clement Town, Dehradun</Text>
+              <View style={styles.zoneHead}>
+                <Text style={styles.profileRowTitle}>Delivery zone</Text>
+                <Pressable onPress={() => void checkZone()} hitSlop={8}>
+                  <Text style={styles.rowLink}>{zoneState === 'checking' ? 'Checking…' : 'Check again'}</Text>
+                </Pressable>
+              </View>
+              <Text
+                style={
+                  zoneState === 'inside'
+                    ? styles.zoneOk
+                    : zoneState === 'outside'
+                      ? styles.zoneBad
+                      : styles.profileRowSub
+                }>
+                {zoneState === 'checking'
+                  ? 'Checking your location…'
+                  : zoneState === 'inside'
+                    ? `📍 Within delivery area${zoneDist != null ? ` • ${zoneDist >= 1000 ? `${(zoneDist / 1000).toFixed(1)} km` : `${zoneDist} m`} from the shop` : ''} — you can order now!`
+                    : zoneState === 'outside'
+                      ? `You are ${zoneDist != null ? (zoneDist >= 1000 ? `${(zoneDist / 1000).toFixed(1)} km` : `${zoneDist} m`) : 'too far'} from the shop — please order when you are within ${radiusLabel()}.`
+                      : zoneState === 'denied'
+                        ? 'Location is off — allow it in Settings, then tap Check.'
+                        : 'Check whether the shop delivers to your location.'}
+              </Text>
             </View>
+            <View style={styles.profileRow}>
+              <Text style={styles.profileRowTitle}>Default delivery address</Text>
+              <TextInput
+                value={profileAddr}
+                onChangeText={setProfileAddr}
+                placeholder="e.g. H.No 12, Lane 3, Near Sakshi Electronics"
+                placeholderTextColor="#B4A69E"
+                style={styles.profileAddrInput}
+                multiline
+              />
+              <Text style={styles.addrHint}>
+                Auto-filled at checkout. Delivery goes to your GPS location — this only helps the rider find you.
+              </Text>
+            </View>
+            <Pressable
+              style={[styles.btn, savingProfile && styles.btnDisabled]}
+              onPress={() => void saveProfile()}
+              disabled={savingProfile}>
+              {savingProfile ? (
+                <View style={styles.checkoutBusyRow}>
+                  <ActivityIndicator size="small" color={Brand.white} />
+                  <Text style={styles.btnText}>Saving…</Text>
+                </View>
+              ) : (
+                <Text style={styles.btnText}>Save profile</Text>
+              )}
+            </Pressable>
+            <Pressable style={[styles.profileRow, styles.ordersCard]} onPress={() => switchTab('orders')}>
+              <View>
+                <Text style={styles.profileRowTitle}>My orders</Text>
+                <Text style={styles.profileRowSub}>
+                  {orderCount === 0 ? 'No orders yet' : `${orderCount} order${orderCount === 1 ? '' : 's'} • ₹${orderSpent} paid`}
+                </Text>
+              </View>
+              <Text style={styles.ordersArrow}>→</Text>
+            </Pressable>
             <View style={styles.profileRow}>
               <Text style={styles.profileRowTitle}>Food preference</Text>
               <Text style={styles.profileRowSub}>Pure Veg • Always on</Text>
@@ -1582,7 +1777,7 @@ export default function HomeScreen() {
             <View style={styles.profileRow}>
               <Text style={styles.profileRowTitle}>Order notifications</Text>
               <Text style={styles.profileRowSub}>
-                {pushState === 'on' ? 'ON • status push ayegi' : pushState === 'off' ? `OFF • ${pushReason}` : 'Checking…'}
+                {pushState === 'on' ? 'ON • you will receive status updates' : pushState === 'off' ? `OFF • ${pushReason}` : 'Checking…'}
               </Text>
             </View>
             {pushState === 'off' && (
@@ -1640,6 +1835,10 @@ export default function HomeScreen() {
         onRequestClose={() => {
           if (!placingOrder) setCartOpen(false);
         }}>
+        {/* Keyboard khulne pe sheet upar uthe — address box keyboard ke neeche na dabe. */}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}>
         <Pressable
           style={styles.sheetBg}
           onPress={() => {
@@ -1653,7 +1852,7 @@ export default function HomeScreen() {
                 <Text style={styles.sheetClear}>Clear</Text>
               </Pressable>
             </View>
-            <ScrollView style={styles.sheetList}>
+            <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
               {lines.map(({ item, portion, qty, unit }) => (
                 <View key={`${item.id}:${portion}`} style={styles.sheetLine}>
                   <View style={styles.sheetInfo}>
@@ -1731,6 +1930,7 @@ export default function HomeScreen() {
             )}
           </Pressable>
         </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Razorpay payment sheet */}
@@ -2127,6 +2327,7 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 20, color: Brand.espresso, fontFamily: Fonts.display },
   emptyText: { fontSize: 14, color: Brand.stone, fontFamily: Fonts.body },
   ordersLoader: { marginTop: 60 },
+  ordersTabs: { flexDirection: 'row', marginTop: 12 },
   orderCard: {
     marginTop: 14,
     backgroundColor: Brand.white,
@@ -2246,6 +2447,44 @@ const styles = StyleSheet.create({
   },
   profileRowTitle: { fontSize: 11, letterSpacing: 1.5, color: Brand.stone, fontFamily: Fonts.bodyBold },
   profileRowSub: { marginTop: 4, fontSize: 15, color: Brand.espresso, fontFamily: Fonts.bodySemi },
+  profileLabel: { marginTop: 10, fontSize: 11, letterSpacing: 1.5, color: Brand.stone, fontFamily: Fonts.bodyBold },
+  profileNameInput: {
+    marginTop: 6,
+    width: '100%',
+    backgroundColor: Brand.white,
+    borderWidth: 1.5,
+    borderColor: Brand.bone,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 17,
+    color: Brand.espresso,
+    fontFamily: Fonts.bodySemi,
+    textAlign: 'center',
+  },
+  verifiedRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+  verifiedBadge: { backgroundColor: '#E6F4EA', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  verifiedText: { fontSize: 11, color: '#1E7A34', fontFamily: Fonts.bodyExtra },
+  profileAddrInput: {
+    marginTop: 8,
+    backgroundColor: Brand.white,
+    borderWidth: 1.5,
+    borderColor: Brand.bone,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 56,
+    fontSize: 14,
+    color: Brand.espresso,
+    fontFamily: Fonts.body,
+    textAlignVertical: 'top',
+  },
+  zoneHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  rowLink: { fontSize: 13, color: Brand.terracotta, fontFamily: Fonts.bodyBold },
+  zoneOk: { marginTop: 4, fontSize: 14, lineHeight: 20, color: '#1E7A34', fontFamily: Fonts.bodySemi },
+  zoneBad: { marginTop: 4, fontSize: 14, lineHeight: 20, color: '#B3261E', fontFamily: Fonts.bodySemi },
+  ordersCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  ordersArrow: { fontSize: 22, color: Brand.terracotta, fontFamily: Fonts.bodyExtra },
   logoutBtn: {
     marginTop: 16,
     backgroundColor: Brand.espresso,

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -13,6 +13,7 @@ import {
 } from '@expo-google-fonts/outfit';
 import { AuthProvider } from '@/context/AuthContext';
 import { CartProvider } from '@/context/CartContext';
+import { AppSplash } from '@/components/app-splash';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -25,6 +26,9 @@ export default function RootLayout() {
     Outfit_700Bold,
     Outfit_800ExtraBold,
   });
+  // Branded launch — native splash (logo on cream) hands off to the
+  // animated AppSplash, which fades into the app.
+  const [splashDone, setSplashDone] = useState(false);
 
   useEffect(() => {
     if (fontsLoaded || fontError) {
@@ -32,10 +36,13 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
+  if (!fontsLoaded && !fontError) return null;
+
   return (
     <AuthProvider>
       <CartProvider>
       <StatusBar style="dark" />
+      {!splashDone && <AppSplash onDone={() => setSplashDone(true)} />}
       <Stack
         screenOptions={{
           headerShown: false,
