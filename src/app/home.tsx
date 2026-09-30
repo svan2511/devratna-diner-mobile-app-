@@ -114,6 +114,7 @@ const FOOD_IMAGES: Record<DishImageKey, number> = {
   'chole-chawal': require('@/assets/images/food/chole-chawal.jpg'),
   'rajma-chawal': require('@/assets/images/food/rajma-chawal.jpg'),
   'bread-pakoda': require('@/assets/images/food/bread-pakoda.jpg'),
+  'bread-cutlet': require('@/assets/images/food/bread-cutlet.jpg'),
   'cold-coffee': require('@/assets/images/food/cold-coffee.jpg'),
   'french-fries': require('@/assets/images/food/french-fries.jpg'),
   'kitkat-shake': require('@/assets/images/food/kitkat-shake.jpg'),

@@ -99,7 +99,8 @@ export type DishImageKey =
   | 'kadhi-chawal'
   | 'special-veg-thali'
   | 'veg-momos'
-  | 'veg-noodles';
+  | 'veg-noodles'
+  | 'bread-cutlet';
 
 export type MenuItem = {
   id: number;
@@ -193,7 +194,7 @@ export const MENU: MenuCategory[] = [
       dish(20, 'Bread Pakoda', '₹20', 20, 'Stuffed bread fritters, chai-time favourite.', 'bread-pakoda'),
       dish(21, 'Paneer Pakoda (8 Pcs)', '₹150', 150, 'Crisp batter-fried paneer bites.', 'paneer-pakoda'),
       dish(22, 'Mix Pakoda (250 gm)', '₹100', 100, 'Assorted monsoon fritters.', 'mix-pakoda'),
-      dish(106, 'Bread Cutlet (2 Pcs)', '₹50', 50, 'Crisp bread cutlets with chutney.'),
+      dish(106, 'Bread Cutlet (2 Pcs)', '₹50', 50, 'Crisp bread cutlets with chutney.', 'bread-cutlet'),
     ],
   },
   {
@@ -364,98 +365,15 @@ export function findItem(id: number): MenuItem | undefined {
   return LIVE_ITEMS?.find((i) => i.id === id) ?? ALL_ITEMS.get(id);
 }
 
-/** Local photo override by dish id — ensures live API data also shows zomt photos. */
+/**
+ * Local photo override by dish id (SEEDER ids — live API data ke liye).
+ * Backend image_key zyadatar sahi hai; sirf jaha null hai waha override:
+ * 25 = Bread Cutlet, 84 = Masala Tea (chai photo closest hai).
+ * Nayi dish add ho to id seeder se verify karke hi entry dalna!
+ */
 const IMAGE_OVERRIDES: Record<number, DishImageKey> = {
-  1: 'aallo-paratha',
-  2: 'aallo-pyaz',
-  3: 'gobhi-paratha',
-  4: 'mix-paratha',
-  5: 'paneer-paratha',
-  6: 'plain-paratha',
-  7: 'pyaz-paratha',
-  8: 'plain-roti',
-  9: 'butter-roti',
-  10: 'puri-bhazi',
-  11: 'chole-bhature',
-  20: 'bread-pakoda',
-  21: 'paneer-pakoda',
-  22: 'mix-pakoda',
-  25: 'veg-thali',
-  26: 'special-veg-thali',
-  27: 'rajma-chawal',
-  28: 'kadhi-chawal',
-  29: 'chole-chawal',
-  30: 'daal-chawal',
-  31: 'matar-paneer',
-  32: 'kadhai-paneer',
-  33: 'paneer-butter-masala',
-  34: 'paneer-bhurji',
-  35: 'paneer-do-pyaza',
-  36: 'mix-veg',
-  37: 'alu-matar',
-  38: 'alu-shimla-mirch',
-  39: 'alu-gobhi',
-  40: 'gobhi-masala',
-  41: 'alu-zeera',
-  42: 'sev-bhaji',
-  43: 'dal-fry',
-  44: 'dal-tadka',
-  45: 'dal-makhni',
-  46: 'rajma',
-  47: 'chole',
-  48: 'chana-masala',
-  49: 'kadhi',
-  50: 'veg-noodles',
-  51: 'hakka-noodles',
-  52: 'shezwan-noodles',
-  53: 'paneer-noodles',
-  54: 'garlic-noodles',
-  55: 'veg-momos',
-  56: 'fried-momos',
-  57: 'kurkure-momos',
-  59: 'manchuriyan-dry',
-  60: 'manchuriyan-gravy',
-  61: 'chilli-patato',
-  62: 'honey-chilli-potato',
-  63: 'french-fries',
-  64: 'peri-peri-fries',
-  65: 'white-sauce-pasta',
-  66: 'red-sauce-pasta',
-  67: 'mix-sauce-pasta',
-  68: 'chilli-panner-gravy',
-  69: 'chilli-panner-dry',
-  70: 'fried-rice',
-  71: 'paneer-fried-rice',
-  72: 'shezwan-rice',
-  73: 'jeera-rice',
-  74: 'steam-rice',
-  75: 'vegetable-raita',
-  76: 'boondi-raita',
-  77: 'dahi',
-  78: 'plane-maggie',
-  79: 'vegitable-maggie',
-  80: 'panner-maggie',
-  81: 'cheez-maggie',
-  89: 'cold-coffee',
-  82: 'tea',
-  84: 'lemon-tea',
-  85: 'black-tea',
-  86: 'green-tea',
-  87: 'ice-tea',
-  88: 'hot-coffee',
-  90: 'black-coffee',
-  91: 'banana-shake',
-  92: 'mango-shake',
-  93: 'kitkat-shake',
-  94: 'oreo-shake',
-  95: 'vanilla-shake',
-  97: 'lemon-soda',
-  98: 'mint-mojito',
-  99: 'blue-lagoon',
-  100: 'shikanji',
-  101: 'lemon-water',
-  102: 'masala-chach',
-  103: 'sweet-lassi',
+  25: 'bread-cutlet',
+  84: 'tea',
 };
 
 /** Convert API payload (single source of truth — admin dashboard) into local menu shape. */
