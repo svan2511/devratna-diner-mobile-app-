@@ -744,6 +744,10 @@ export default function HomeScreen() {
   const [query, setQuery] = useState('');
   const [menuFilter, setMenuFilter] = useState('all');
   const [cartOpen, setCartOpen] = useState(false);
+  // Main list ScrollView — category switch pe top pe le jao (issue: bottom pe atka rehta tha).
+  const scrollRef = useRef<ScrollView>(null);
+  // Logout button loader — server hang ho to bhi UI stuck nahi lagegi.
+  const [loggingOut, setLoggingOut] = useState(false);
   const [address, setAddress] = useState('');
   const [detailItem, setDetailItem] = useState<MenuItem | null>(null);
   // Shimmer states — first load after login + every tab switch.
@@ -802,6 +806,12 @@ export default function HomeScreen() {
     }, 10000);
     return () => clearInterval(t);
   }, [tab, loadOrders]);
+
+  // Token gaya (logout/expiry/401) to login pe wapas — spinner pe atke rahoge
+  // to app band jaisi lagegi. Button ka replace fail ho tab bhi ye sambhal lega.
+  useEffect(() => {
+    if (ready && !token) router.replace('/auth');
+  }, [ready, token, router]);
 
   // Profile inputs server ke user se sync (ek user ke liye ek baar — typing beech me nahi kategi).
   useEffect(() => {
@@ -959,6 +969,8 @@ export default function HomeScreen() {
   const switchTab = useCallback((key: Tab) => {
     if (tabRef.current === key) return;
     tabRef.current = key;
+    // Search dusre tab me leak na ho — har tab apni shuruaat se khule.
+    setQuery('');
     setTab(key);
     setTabLoading(true);
     if (tabTimer.current) clearTimeout(tabTimer.current);
@@ -1043,6 +1055,8 @@ export default function HomeScreen() {
     (key: string) => {
       if (key === menuFilter) return;
       setMenuFilter(key);
+      // Nayi category hamesha top se dikhe — warna bottom pe atke rehte the.
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
       // Restart the shimmer on every tap (even rapid ones).
       setFilterLoading(true);
       if (filterTimer.current) clearTimeout(filterTimer.current);
@@ -1085,15 +1099,6 @@ export default function HomeScreen() {
     const live = menu.flatMap((c) => c.items);
     return ids
       .map((id) => live.find((i) => i.id === id))
-      .filter((x): x is MenuItem => Boolean(x));
-  }, [menu]);
-
-  /** Lunch specials — always visible (separate from the time-based Right now section). */
-  const lunchSpecials = useMemo(() => {
-    const ids = [26, 27, 28, 29, 32, 11];
-    const live = menu.flatMap((c) => c.items);
-    return ids
-      .map((id) => live.find((i) => i.id === id) ?? findItem(id))
       .filter((x): x is MenuItem => Boolean(x));
   }, [menu]);
 
@@ -1144,7 +1149,7 @@ export default function HomeScreen() {
     [switchTab, selectFilter],
   );
 
-  const searching = results !== null;
+  const searching = results !== null && (tab === 'home' || tab === 'menu');
   const showSkeleton = menuLoading || tabLoading;
   // Filter shimmer only — chips stay visible, only dish rows shimmer.
   const showFilterShimmer = filterLoading && !menuLoading && !tabLoading;
@@ -1415,17 +1420,19 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* Search */}
-        <View style={styles.searchRow}>
-          <Text style={styles.searchIcon}>⌕</Text>
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder='Search "momos", "thali", "paneer"...'
-            placeholderTextColor="#B4A69E"
-            style={styles.searchInput}
-          />
-        </View>
+        {/* Search — sirf home/menu pe, taaki orders/profile pe purana search chipka na rahe */}
+        {(tab === 'home' || tab === 'menu') && (
+          <View style={styles.searchRow}>
+            <Text style={styles.searchIcon}>⌕</Text>
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder='Search "momos", "thali", "paneer"...'
+              placeholderTextColor="#B4A69E"
+              style={styles.searchInput}
+            />
+          </View>
+        )}
 
         {offline ? (
           <Text style={styles.offline}>Showing saved menu — connect to refresh live items.</Text>
@@ -1456,6 +1463,7 @@ export default function HomeScreen() {
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
         contentContainerStyle={styles.scrollBody}
         showsVerticalScrollIndicator={false}
@@ -1561,30 +1569,7 @@ export default function HomeScreen() {
               ))}
             </ScrollView>
 
-            {/* Lunch time specials — permanent section */}
-            <Text style={styles.sectionTitle}>Lunch time specials</Text>
-            <Text style={styles.sectionSub}>Hot, hearty and homestyle</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bestRow}>
-              {lunchSpecials.map((item) => (
-                <Pressable key={item.id} style={styles.pocketCard} onPress={() => setDetailItem(item)}>
-                  {item.image ? (
-                    <Image source={FOOD_IMAGES[item.image]} style={styles.pocketImg} contentFit="cover" cachePolicy="memory-disk" transition={200} />
-                  ) : (
-                    <View style={styles.pocketTile}>
-                      <Text style={styles.pocketLetter}>{item.name.charAt(0)}</Text>
-                    </View>
-                  )}
-                  <Text style={styles.pocketName} numberOfLines={2}>
-                    {item.name}
-                  </Text>
-                  <Text style={styles.pocketPrice}>{item.priceLabel}</Text>
-                  {!item.available && <Text style={styles.unavailTag}>Not Available now</Text>}
-                  <AddControl item={item} />
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            {/* Right now */}
+            {/* Right now — time-based picks (morning/lunch/evening/late-night) */}
             <Text style={styles.sectionTitle}>{timePicks.label}</Text>
             <Text style={styles.sectionSub}>{timePicks.sub}</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bestRow}>
@@ -1620,7 +1605,7 @@ export default function HomeScreen() {
               </View>
               <View style={styles.visitRow}>
                 <Text style={styles.visitGlyph}>⌂</Text>
-                <Text style={styles.visitText}>Subhash Nagar Road, Clement Town, Dehradun</Text>
+                <Text style={styles.visitText}>Society Area, Behind Sakshi Electronics, Clement Town, Dehradun</Text>
               </View>
               <View style={styles.visitBtns}>
                 <Pressable
@@ -1835,12 +1820,19 @@ export default function HomeScreen() {
               </Pressable>
             )}
             <Pressable
-              style={styles.logoutBtn}
+              style={[styles.logoutBtn, loggingOut && styles.btnDisabled]}
+              disabled={loggingOut}
               onPress={async () => {
-                await logout();
-                router.replace('/auth');
+                if (loggingOut) return;
+                setLoggingOut(true);
+                try {
+                  await logout();
+                } finally {
+                  setLoggingOut(false);
+                  router.replace('/auth');
+                }
               }}>
-              <Text style={styles.logoutText}>Log out</Text>
+              <Text style={styles.logoutText}>{loggingOut ? 'Logging out…' : 'Log out'}</Text>
             </Pressable>
             <Text style={styles.version}>Dev Ratna v1.0.0 • Made with care in Dehradun</Text>
           </View>

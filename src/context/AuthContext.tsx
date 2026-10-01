@@ -145,9 +145,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     if (token && token !== 'dummy-token') {
       try {
-        await api.logout(token);
+        // Server slow/cold-start ho to bhi logout atke nahi — 8s me local session clear pakka.
+        await Promise.race([
+          api.logout(token),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('logout timeout')), 8000)),
+        ]);
       } catch {
-        // Clear the local session even when server logout fails.
+        // Clear the local session even when server logout fails/times out.
       }
     }
     setToken(null);
