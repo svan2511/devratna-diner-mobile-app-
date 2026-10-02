@@ -12,8 +12,11 @@
 
 // Local testing: EXPO_PUBLIC_API_URL set ho to wahi (bundle time pe inline hota hai).
 // Production build me EXPO_PUBLIC_API_URL set karo, warna Render production URL lagega.
-const envBase = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
-export const API_BASE_URL = envBase !== '' ? envBase : 'https://devratna-apis.onrender.com/api/v1';
+// const envBase = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
+// export const API_BASE_URL = envBase !== '' ? envBase : 'https://devratna-apis.onrender.com/api/v1';
+
+export const API_BASE_URL = 'https://devratna-apis.onrender.com/api/v1';
+
 
 export type ApiUser = {
   id: number;
