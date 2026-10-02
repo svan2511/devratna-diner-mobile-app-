@@ -10,8 +10,10 @@
 //   return 'http://127.0.0.1:8000/api/v1';
 // }
 
-//export const API_BASE_URL = 'http://10.35.185.212:8000/api/v1';
-export const API_BASE_URL = 'https://devratna-apis.onrender.com/api/v1';
+// Local testing: EXPO_PUBLIC_API_URL set ho to wahi (bundle time pe inline hota hai).
+// Production build me EXPO_PUBLIC_API_URL set karo, warna Render production URL lagega.
+const envBase = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
+export const API_BASE_URL = envBase !== '' ? envBase : 'https://devratna-apis.onrender.com/api/v1';
 
 export type ApiUser = {
   id: number;
@@ -42,12 +44,46 @@ export type ApiShopStatus = {
   min_order: number;
   delivery_charge: number;
   radius_m: number;
+  delivery_mode: 'fixed' | 'distance';
+  delivery_base: number;
+  delivery_free_m: number;
+  delivery_per_500m: number;
 };
 
 export type ApiMenuCategory = {
   key: string;
   label: string;
   items: ApiMenuItem[];
+};
+
+export type ApiOffer = {
+  id: number;
+  name: string;
+  description: string | null;
+  target_type: 'all' | 'category' | 'item';
+  target_value: string | null;
+  discount_type: 'none' | 'percent' | 'flat';
+  discount_value: number;
+  discount_scope: 'order' | 'item';
+  free_item_id: number | null;
+  free_item_name: string | null;
+  free_item_price: number;
+  min_order: number;
+  min_qty: number;
+  starts_at: string | null;
+  ends_at: string | null;
+};
+
+export type ApiBanner = {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  pill_text: string | null;
+  target: string | null;
+  theme: string;
+  sort_order: number;
+  offer_name: string | null;
+  offer_ends_at: string | null;
 };
 
 export type ApiOrderLine = {
@@ -60,8 +96,10 @@ export type ApiPlacedOrder = {
   order: {
     id: number;
     total: number;
+    discount?: number;
+    offer_name?: string | null;
     status: string;
-    items: Array<{ id: number; name: string; portion: string; qty: number; unit: number }>;
+    items: Array<{ id: number; name: string; portion: string; qty: number; unit: number; free?: boolean }>;
   };
   razorpay: {
     key_id: string;
@@ -78,12 +116,14 @@ export type ApiVerifiedOrder = {
 export type ApiHistoryOrder = {
   id: number;
   subtotal: number;
+  discount?: number;
+  offer_name?: string | null;
   total: number;
   status: string;
   fulfillment_status?: string | null;
   kitchen_note?: string | null;
   failure_reason: string | null;
-  items: Array<{ id: number; name: string; portion: string; qty: number; unit: number }>;
+  items: Array<{ id: number; name: string; portion: string; qty: number; unit: number; free?: boolean }>;
   delivery_address: string | null;
   created_at: string | null;
   paid_at?: string | null;
@@ -169,6 +209,8 @@ async function putJson<T>(path: string, body: unknown, token: string): Promise<T
 async function getPublic<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
+    // Polling pe stale cached response na mile — naya offer turant dikhe.
+    cache: 'no-store',
   });
   const json = (await res.json().catch(() => null)) as ApiEnvelope<T> | null;
   if (!res.ok || !json?.success)
@@ -200,6 +242,12 @@ export const api = {
   },
   menu() {
     return getPublic<ApiMenuCategory[]>('/menu');
+  },
+  offers() {
+    return getPublic<ApiOffer[]>('/offers');
+  },
+  banners() {
+    return getPublic<ApiBanner[]>('/banners');
   },
   shopStatus() {
     return getPublic<ApiShopStatus>('/shop-status');

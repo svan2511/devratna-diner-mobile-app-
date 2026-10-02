@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRootNavigationState, useRouter } from 'expo-router';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -20,6 +20,9 @@ import { useAuth } from '@/context/AuthContext';
 export default function SplashScreen() {
   const router = useRouter();
   const { ready, token } = useAuth();
+  // Navigator mount hone se pehle replace() mat chalao — warna dev me
+  // "state update on not-yet-mounted component" warning aati hai.
+  const navKey = useRootNavigationState()?.key;
 
   const scale = useSharedValue(0.6);
   const opacity = useSharedValue(0);
@@ -35,12 +38,12 @@ export default function SplashScreen() {
   }, [opacity, ring, scale]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !navKey) return;
     const t = setTimeout(() => {
       router.replace(token ? '/home' : '/auth');
     }, 1900);
     return () => clearTimeout(t);
-  }, [ready, token, router]);
+  }, [ready, token, router, navKey]);
 
   const logoStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],

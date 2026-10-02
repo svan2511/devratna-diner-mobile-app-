@@ -19,6 +19,27 @@ export const SHOP = {
   deliveryCharge: 40,
 };
 
+export type ShopDeliveryCfg = {
+  deliveryMode: 'fixed' | 'distance';
+  deliveryCharge: number;
+  deliveryBase: number;
+  deliveryFreeM: number;
+  deliveryPer500m: number;
+};
+
+/**
+ * Backend DeliveryCharge mirror — bill PREVIEW ke liye.
+ * distanceM null (GPS nahi) + distance mode = base charge dikhao.
+ * Final hisaab hamesha server karta hai.
+ */
+export function deliveryChargeFor(distanceM: number | null, cfg: ShopDeliveryCfg): number {
+  if (cfg.deliveryMode !== 'distance') return Math.max(0, cfg.deliveryCharge);
+  if (distanceM == null) return Math.max(0, cfg.deliveryBase);
+  const extra = distanceM - Math.max(0, cfg.deliveryFreeM);
+  if (extra <= 0) return Math.max(0, cfg.deliveryBase);
+  return Math.max(0, cfg.deliveryBase) + Math.max(0, cfg.deliveryPer500m) * Math.ceil(extra / 500);
+}
+
 /** Display label — 1000 => "1 km", 500 => "500m". Pass live radius; default = bundled fallback. */
 export function radiusLabel(m: number = SHOP.radiusM): string {
   if (m >= 1000 && m % 1000 === 0) return `${m / 1000} km`;

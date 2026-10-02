@@ -1,12 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Dimensions,
+  Keyboard,
   KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,9 +26,10 @@ import { portionLabel, useCart, unitPrice, type CartLine, type Portion } from '@
 import { BESTSELLERS, MENU, findItem, fromApi, setLiveMenu, type DishImageKey, type MenuItem } from '@/data/menu';
 import { ScreenSkeleton, MenuListSkeleton } from '@/components/skeleton';
 import { RazorpayCheckout, type RazorpayCheckoutData, type RazorpaySuccess } from '@/components/razorpay-checkout';
-import { SHOP, distanceMetres, radiusLabel } from '@/lib/shop';
+import { SHOP, deliveryChargeFor, distanceMetres, radiusLabel } from '@/lib/shop';
 import { AppAlert, type AppAlertData } from '@/components/app-alert';
-import { api, SessionExpiredError, type ApiHistoryOrder } from '@/lib/api';
+import { api, SessionExpiredError, type ApiBanner, type ApiHistoryOrder, type ApiOffer } from '@/lib/api';
+import { formatTimer, pickBestOffer } from '@/lib/offers';
 import {
   consumePendingOrdersTab,
   isOrderPush,
@@ -166,67 +170,74 @@ const TABS = [
   { key: 'profile', label: 'Profile', icon: { ios: 'person.fill', android: 'account_circle', web: 'account_circle' } },
 ] as const;
 
-const BANNERS = [
+type BannerSlide = {
+  key: string;
+  title: string;
+  text: string;
+  pill: string;
+  /** Menu category key ('all' samet) — null = no action. */
+  target: string | null;
+  /** Juda offer ki expiry (ISO) — timer chip ke liye. Null = koi timer nahi. */
+  endsAt: string | null;
+  bg: string;
+  fg: string;
+  sub: string;
+  pillBg: string;
+  pillFg: string;
+};
+
+/** Admin panel ke theme keys — Brand colors pe map (admin design bigaad nahi sakta). */
+const BANNER_THEMES: Record<string, Pick<BannerSlide, 'bg' | 'fg' | 'sub' | 'pillBg' | 'pillFg'>> = {
+  espresso: { bg: Brand.espresso, fg: Brand.cream, sub: Brand.gold, pillBg: Brand.gold, pillFg: '#3A2A00' },
+  terracotta: { bg: Brand.terracotta, fg: '#FFFFFF', sub: '#FFE3D3', pillBg: 'rgba(255,255,255,0.25)', pillFg: '#FFFFFF' },
+  gold: { bg: Brand.gold, fg: '#3A2A00', sub: '#5C4500', pillBg: Brand.espresso, pillFg: Brand.cream },
+  cream: { bg: '#FFFFFF', fg: Brand.espresso, sub: Brand.stone, pillBg: Brand.terracotta, pillFg: '#FFFFFF' },
+  forest: { bg: '#1E4D2B', fg: Brand.cream, sub: '#BCD5C2', pillBg: Brand.cream, pillFg: '#1E4D2B' },
+};
+
+/**
+ * Brand slides — admin ne koi banner nahi banaya (ya API fail) to ye dikhenge.
+ * Koi jhootha discount claim nahi, isliye design + bharosa dono safe.
+ */
+const FALLBACK_BANNERS: BannerSlide[] = [
   {
-    bg: Brand.espresso,
-    fg: Brand.cream,
-    sub: Brand.gold,
-    pillBg: Brand.gold,
-    pillFg: '#3A2A00',
-    title: 'Flat 20% off on Thalis',
-    text: 'Veg & Special Thali • Auto-applied',
-    pill: 'Order now',
-    filter: 'thali',
-  },
-  {
-    bg: Brand.terracotta,
-    fg: '#FFFFFF',
-    sub: '#FFE3D3',
-    pillBg: 'rgba(255,255,255,0.25)',
-    pillFg: '#FFFFFF',
-    title: 'Momos Fest',
-    text: 'Steamed, fried & tandoori from ₹70',
-    pill: 'Crave it',
-    filter: 'chinese',
-  },
-  {
-    bg: Brand.gold,
-    fg: '#3A2A00',
-    sub: '#5C4500',
-    pillBg: Brand.espresso,
-    pillFg: Brand.cream,
-    title: '₹40 Flat Delivery',
-    text: 'Within 1 km • Min food order ₹500',
-    pill: 'Start order',
-    filter: 'all',
-  },
-  {
-    bg: '#FFFFFF',
-    fg: Brand.espresso,
-    sub: Brand.stone,
-    pillBg: Brand.terracotta,
-    pillFg: '#FFFFFF',
-    title: 'Breakfast from ₹10',
-    text: 'Parathas, sandwiches, burgers & more',
+    key: 'brand-veg',
+    title: '100% Pure Veg',
+    text: 'Clement Town ka apna diner',
     pill: 'See menu',
-    filter: 'breakfast',
+    target: 'all',
+    endsAt: null,
+    ...BANNER_THEMES.espresso,
   },
   {
-    bg: '#1E4D2B',
-    fg: Brand.cream,
-    sub: '#BCD5C2',
-    pillBg: Brand.cream,
-    pillFg: '#1E4D2B',
+    key: 'brand-paratha',
+    title: 'Tawa-fresh Parathas',
+    text: 'Aloo pyaz • gobhi • paneer',
+    pill: 'Breakfast',
+    target: 'breakfast',
+    endsAt: null,
+    ...BANNER_THEMES.terracotta,
+  },
+  {
+    key: 'brand-coolers',
     title: 'Shakes & Coolers',
-    text: 'Cold coffee, lassi, mojitos & more',
+    text: 'Cold coffee, lassi, mojito & more',
     pill: 'Sip it',
-    filter: 'beverages',
+    target: 'beverages',
+    endsAt: null,
+    ...BANNER_THEMES.forest,
   },
 ];
 
 const BANNER_GAP = 12;
 // Card is slightly narrower so the next offer peeks in — slider feel.
 const BANNER_W = Dimensions.get('window').width - 32 - 44;
+// Cart sheet body cap — handle + paddings + fixed footer ke baad bachi jagah.
+// (deterministic pixels, taaki list + bill kabhi button ko dhakka na de —
+// button hamesha neeche fixed dikhega, upar wala hissa scroll hoga.)
+const SHEET_BODY_MAX_H = Math.max(200, Dimensions.get('window').height * 0.85 - 230);
+// Keyboard khula ho to sheet us hisab se sikude — warna address box dab jata hai.
+const WIN_H = Dimensions.get('window').height;
 
 /** Green veg mark (everything here is pure veg). */
 function VegMark() {
@@ -574,7 +585,9 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
   const stepIdx = TRACK_STEPS.findIndex((s) => s.key === ful);
   const count = order.items.reduce((s, l) => s + (l.qty || 0), 0);
   const subtotal = order.subtotal ?? order.items.reduce((s, l) => s + l.unit * l.qty, 0);
-  const delivery = Math.max(0, order.total - subtotal);
+  const discount = order.discount ?? 0;
+  // total = subtotal - discount + delivery (offer ke baad ye formula badal gaya tha).
+  const delivery = Math.max(0, order.total - subtotal + discount);
   const cancelled = ful === 'cancelled';
   return (
     <View style={styles.orderCard}>
@@ -601,6 +614,13 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
           </Text>
         </View>
       )}
+      {order.offer_name ? (
+        <View style={[styles.ordStrip, { backgroundColor: '#E9F5EC' }]}>
+          <Text style={[styles.ordStripText, { color: '#1E4D2B' }]} numberOfLines={2}>
+            🎉 {order.offer_name} applied{discount > 0 ? ` • −₹${discount}` : ''}
+          </Text>
+        </View>
+      ) : null}
 
       <View style={styles.ordBody}>
         {order.delivery_address ? (
@@ -623,8 +643,9 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
               <Text style={styles.ordItemName} numberOfLines={2}>
                 {l.name}
                 {l.portion !== 'single' ? ` (${portionLabel(l.portion as Portion)})` : ''}
+                {l.free ? ' 🎉 FREE' : ''}
               </Text>
-              <Text style={styles.ordItemAmt}>₹{l.unit * l.qty}</Text>
+              <Text style={styles.ordItemAmt}>{l.free ? 'FREE' : `₹${l.unit * l.qty}`}</Text>
             </View>
           ))}
         </View>
@@ -634,6 +655,12 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
             <Text style={styles.receiptLbl}>Item total ({count})</Text>
             <Text style={styles.receiptVal}>₹{subtotal}</Text>
           </View>
+          {discount > 0 && (
+            <View style={styles.receiptRow}>
+              <Text style={[styles.receiptLbl, styles.billFree]}>Offer discount{order.offer_name ? ` (${order.offer_name})` : ''}</Text>
+              <Text style={[styles.receiptVal, styles.billFree]}>−₹{discount}</Text>
+            </View>
+          )}
           <View style={styles.receiptRow}>
             <Text style={styles.receiptLbl}>Delivery</Text>
             <Text style={styles.receiptVal}>₹{delivery}</Text>
@@ -667,11 +694,48 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
 }
 
 /**
+ * Ticking countdown — har second ghat-ta hai, khatam hote hi null.
+ * Apna interval khud chalata hai taaki parent re-render na ho.
+ */
+function useRemainingMs(endsAt: string | null): number | null {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!endsAt || new Date(endsAt).getTime() <= Date.now()) return;
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [endsAt]);
+  if (!endsAt) return null;
+  const ms = new Date(endsAt).getTime() - nowMs;
+  return ms > 0 ? ms : null;
+}
+
+/**
+ * Sale-timer chip — banner ke top-right me ⏳ 01:59:33, har second ghat-ta hai.
+ * Khatam hote hi gayab (banner agle refresh me list se hat jayega).
+ */
+const BannerTimerChip = memo(function BannerTimerChip({ endsAt }: { endsAt: string }) {
+  const ms = useRemainingMs(endsAt);
+  if (ms == null) return null;
+  return (
+    <View style={styles.bannerTimer}>
+      <Text style={styles.bannerTimerText}>⏳ {formatTimer(ms)}</Text>
+    </View>
+  );
+});
+/**
  * Isolated offer carousel — dot updates re-render only this component,
  * so swiping never re-renders the long menu list (keeps scrolling smooth).
  */
-const OfferCarousel = memo(function OfferCarousel({ onPress }: { onPress: (filter: string) => void }) {
+const OfferCarousel = memo(function OfferCarousel({
+  items,
+  onPress,
+}: {
+  items: BannerSlide[];
+  onPress: (target: string | null) => void;
+}) {
   const [idx, setIdx] = useState(0);
+  // Naya data aaye to clamp — dots/list kabhi mismatch nahi honge (bina effect ke).
+  const safeIdx = Math.min(idx, Math.max(0, items.length - 1));
   return (
     <View>
       <ScrollView
@@ -683,24 +747,25 @@ const OfferCarousel = memo(function OfferCarousel({ onPress }: { onPress: (filte
         onMomentumScrollEnd={(e) =>
           setIdx(Math.round(e.nativeEvent.contentOffset.x / (BANNER_W + BANNER_GAP)))
         }>
-        {BANNERS.map((b, i) => (
+        {items.map((b) => (
           <Pressable
-            key={i}
+            key={b.key}
             style={[styles.banner, { backgroundColor: b.bg, width: BANNER_W }]}
-            onPress={() => onPress(b.filter)}>
+            onPress={() => onPress(b.target)}>
             <View>
               <Text style={[styles.bannerTitle, { color: b.fg }]}>{b.title}</Text>
-              <Text style={[styles.bannerText, { color: b.sub }]}>{b.text}</Text>
+              {b.text ? <Text style={[styles.bannerText, { color: b.sub }]}>{b.text}</Text> : null}
             </View>
             <View style={[styles.bannerPill, { backgroundColor: b.pillBg }]}>
               <Text style={[styles.bannerPillText, { color: b.pillFg }]}>{b.pill}</Text>
             </View>
+            {b.endsAt ? <BannerTimerChip endsAt={b.endsAt} /> : null}
           </Pressable>
         ))}
       </ScrollView>
       <View style={styles.dots}>
-        {BANNERS.map((_, i) => (
-          <View key={i} style={[styles.dot, i === idx && styles.dotActive]} />
+        {items.map((b) => (
+          <View key={b.key} style={[styles.dot, b.key === items[safeIdx]?.key && styles.dotActive]} />
         ))}
       </View>
     </View>
@@ -713,7 +778,7 @@ const OfferCarousel = memo(function OfferCarousel({ onPress }: { onPress: (filte
  */
 export default function HomeScreen() {
   const router = useRouter();
-  const { ready, token, user, logout, dummyMode, forceLogout, updateProfile } = useAuth();
+  const { ready, token, user, logout, forceLogout, updateProfile } = useAuth();
   const { lines, count, total, clear, add, removeLine } = useCart();
   // System nav / gesture bar ke upar sheet button rahe — dev build me checkout dab gaya tha.
   const insets = useSafeAreaInsets();
@@ -721,6 +786,11 @@ export default function HomeScreen() {
   const [tab, setTab] = useState<Tab>('home');
   const [menu, setMenu] = useState(MENU);
   const [offline, setOffline] = useState(false);
+  // Live offer banners (admin panel) — null = abhi load nahi hue, tab tak brand slides.
+  // Empty array = admin ne koi banner nahi banaya, tab bhi brand slides (design safe).
+  const [liveBanners, setLiveBanners] = useState<ApiBanner[] | null>(null);
+  // Live offers (discount + free item) — bill preview ke liye; final hisaab server ka.
+  const [offers, setOffers] = useState<ApiOffer[]>([]);
   // Admin dashboard switch — false = orders band, banner + checkout block.
   const [shopOpen, setShopOpen] = useState(true);
   // Live shop rules — /shop-status se aate hain (admin Settings se turant badalte hain).
@@ -729,21 +799,86 @@ export default function HomeScreen() {
     radiusM: SHOP.radiusM,
     minOrder: SHOP.minOrder,
     deliveryCharge: SHOP.deliveryCharge,
+    deliveryMode: 'fixed' as 'fixed' | 'distance',
+    deliveryBase: SHOP.deliveryCharge,
+    deliveryFreeM: 1000,
+    deliveryPer500m: 4,
   });
+  // Pull-to-refresh spinner.
+  const [refreshing, setRefreshing] = useState(false);
   /** Server values ko validate karke lagao — kachra aaye to purana rakho. */
-  const applyShopStatus = useCallback((s: { radius_m?: unknown; min_order?: unknown; delivery_charge?: unknown }) => {
-    setShopCfg((prev) => ({
-      radiusM: typeof s.radius_m === 'number' && Number.isFinite(s.radius_m) && s.radius_m >= 100 && s.radius_m <= 20000
-        ? Math.round(s.radius_m) : prev.radiusM,
-      minOrder: typeof s.min_order === 'number' && Number.isFinite(s.min_order) && s.min_order >= 0
-        ? Math.round(s.min_order) : prev.minOrder,
-      deliveryCharge: typeof s.delivery_charge === 'number' && Number.isFinite(s.delivery_charge) && s.delivery_charge >= 0
-        ? Math.round(s.delivery_charge) : prev.deliveryCharge,
-    }));
-  }, []);
+  const applyShopStatus = useCallback(
+    (s: {
+      radius_m?: unknown;
+      min_order?: unknown;
+      delivery_charge?: unknown;
+      delivery_mode?: unknown;
+      delivery_base?: unknown;
+      delivery_free_m?: unknown;
+      delivery_per_500m?: unknown;
+    }) => {
+      setShopCfg((prev) => ({
+        radiusM: typeof s.radius_m === 'number' && Number.isFinite(s.radius_m) && s.radius_m >= 100 && s.radius_m <= 20000
+          ? Math.round(s.radius_m) : prev.radiusM,
+        minOrder: typeof s.min_order === 'number' && Number.isFinite(s.min_order) && s.min_order >= 0
+          ? Math.round(s.min_order) : prev.minOrder,
+        deliveryCharge: typeof s.delivery_charge === 'number' && Number.isFinite(s.delivery_charge) && s.delivery_charge >= 0
+          ? Math.round(s.delivery_charge) : prev.deliveryCharge,
+        deliveryMode: s.delivery_mode === 'distance' ? 'distance' : 'fixed',
+        deliveryBase: typeof s.delivery_base === 'number' && Number.isFinite(s.delivery_base) && s.delivery_base >= 0
+          ? Math.round(s.delivery_base) : prev.deliveryBase,
+        deliveryFreeM: typeof s.delivery_free_m === 'number' && Number.isFinite(s.delivery_free_m) && s.delivery_free_m >= 0
+          ? Math.round(s.delivery_free_m) : prev.deliveryFreeM,
+        deliveryPer500m: typeof s.delivery_per_500m === 'number' && Number.isFinite(s.delivery_per_500m) && s.delivery_per_500m >= 0
+          ? Math.round(s.delivery_per_500m) : prev.deliveryPer500m,
+      }));
+    },
+    [],
+  );
+  /**
+   * Silent live refresh — menu + shop + banners + offers ek sath.
+   * Polling (25s), foreground-resume aur pull-to-refresh sab yahi chalate hain,
+   * taaki naya offer/banner kahin se bhi miss na ho. Koi shimmer nahi.
+   */
+  const refreshLive = useCallback(async () => {
+    try {
+      const cats = await api.menu();
+      const fresh = fromApi(cats);
+      setLiveMenu(fresh);
+      setMenu(fresh);
+      setOffline(false);
+    } catch {}
+    try {
+      const s = await api.shopStatus();
+      setShopOpen(s.shop_open);
+      applyShopStatus(s);
+    } catch {}
+    try {
+      const list = await api.banners();
+      if (Array.isArray(list)) setLiveBanners(list);
+    } catch {}
+    try {
+      const list = await api.offers();
+      if (Array.isArray(list)) setOffers(list);
+    } catch {}
+  }, [applyShopStatus]);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshLive();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshLive]);
   const [query, setQuery] = useState('');
   const [menuFilter, setMenuFilter] = useState('all');
   const [cartOpen, setCartOpen] = useState(false);
+  // Keyboard ki height — khula ho to sheet sikud ke address box dikhaye.
+  const [kbH, setKbH] = useState(0);
+  const sheetBodyRef = useRef<ScrollView>(null);
+  // Address box pe jump + focus ke liye refs.
+  const addrInputRef = useRef<TextInput>(null);
+  const addrBoxY = useRef(0);
   // Main list ScrollView — category switch pe top pe le jao (issue: bottom pe atka rehta tha).
   const scrollRef = useRef<ScrollView>(null);
   // Logout button loader — server hang ho to bhi UI stuck nahi lagegi.
@@ -778,7 +913,7 @@ export default function HomeScreen() {
   // Active = abhi kaam chal raha hai (delivered/cancelled yaha nahi dikhte).
   const [ordersTab, setOrdersTab] = useState<'active' | 'past'>('active');
   const loadOrders = useCallback(async (silent = false) => {
-    if (!token || token === 'dummy-token') {
+    if (!token) {
       setOrders([]);
       return;
     }
@@ -812,6 +947,16 @@ export default function HomeScreen() {
   useEffect(() => {
     if (ready && !token) router.replace('/auth');
   }, [ready, token, router]);
+
+  // Keyboard open/close track — cart sheet us hisab se height badlegi.
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', (e) => setKbH(e.endCoordinates.height));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKbH(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
 
   // Profile inputs server ke user se sync (ek user ke liye ek baar — typing beech me nahi kategi).
   useEffect(() => {
@@ -930,32 +1075,41 @@ export default function HomeScreen() {
         }
       })
       .catch(() => {});
-    // A. Silent polling — khuli app me menu + status fresh rahe (koi shimmer nahi).
-    // Admin rate/availability change ~25 sec me bina reopen ke dikhega.
+    // Home offer banners — admin panel se. Fail/empty = brand slides (koi shimmer nahi).
+    api
+      .banners()
+      .then((list) => {
+        if (alive && Array.isArray(list)) setLiveBanners(list);
+      })
+      .catch(() => {});
+    // Live offers — bill preview. Fail = koi offer nahi (server final hisaab karega).
+    api
+      .offers()
+      .then((list) => {
+        if (alive && Array.isArray(list)) setOffers(list);
+      })
+      .catch(() => {});
+    // A. Silent polling — khuli app me menu + status + banners + offers fresh rahe (koi shimmer nahi).
+    // Admin rate/availability/banner/offer change ~25 sec me bina reopen ke dikhega.
+    // (Ek hi refreshLive — chaaro endpoints ek sath, kahin miss na ho.)
     const poll = setInterval(() => {
-      api
-        .menu()
-        .then((cats) => {
-          const fresh = fromApi(cats);
-          setLiveMenu(fresh);
-          setMenu(fresh);
-          setOffline(false);
-        })
-        .catch(() => {});
-      api
-        .shopStatus()
-        .then((s) => {
-          setShopOpen(s.shop_open);
-          applyShopStatus(s);
-        })
-        .catch(() => {});
+      void refreshLive();
     }, 25000);
     return () => {
       alive = false;
       clearTimeout(fallback);
       clearInterval(poll);
     };
-  }, []);
+  }, [refreshLive, applyShopStatus]);
+
+  // App background se wapas aaye to turant fresh — interval background me
+  // throttle hota hai, isliye resume pe naya offer/banner turant dikhega.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshLive();
+    });
+    return () => sub.remove();
+  }, [refreshLive]);
 
   useEffect(
     () => () => {
@@ -985,7 +1139,7 @@ export default function HomeScreen() {
   const [pushBusy, setPushBusy] = useState(false);
 
   const enablePush = useCallback(async () => {
-    if (!token || token === 'dummy-token' || dummyMode) {
+    if (!token) {
       setPushState('off');
       setPushReason('Please log in and try again');
       return false;
@@ -1012,16 +1166,16 @@ export default function HomeScreen() {
     } finally {
       setPushBusy(false);
     }
-  }, [token, dummyMode]);
+  }, [token]);
 
   useEffect(() => {
-    if (!token || token === 'dummy-token' || dummyMode) {
+    if (!token) {
       setPushState('off');
       setPushReason('Will try automatically after login');
       return;
     }
     void enablePush();
-  }, [token, dummyMode, enablePush]);
+  }, [token, enablePush]);
 
   // Push aaye to: foreground me list refresh, tap pe relatable screen kholo.
   // (Expo Go me listeners null — kuch nahi hota, polling cover karta hai.)
@@ -1107,6 +1261,26 @@ export default function HomeScreen() {
     [menu, menuFilter],
   );
 
+  /**
+   * Home banners — admin ke live banners ho to wahi, warna brand slides.
+   * Admin zero banners = design same rahegi, koi jhootha offer nahi dikhega.
+   * (Timer chip apna second khud gin-ta hai — yaha koi ticking state nahi.)
+   */
+  const bannerSlides: BannerSlide[] = useMemo(() => {
+    if (liveBanners && liveBanners.length > 0) {
+      return liveBanners.map((b) => ({
+        key: `live-${b.id}`,
+        title: b.title,
+        text: b.subtitle ?? '',
+        pill: b.pill_text || 'Open',
+        target: b.target,
+        endsAt: b.offer_ends_at ?? null,
+        ...(BANNER_THEMES[b.theme] ?? BANNER_THEMES.espresso),
+      }));
+    }
+    return FALLBACK_BANNERS;
+  }, [liveBanners]);
+
   /** Bestsellers — live menu se (admin ke bestseller flag + rate ke sath).
    *  API na mile to bundled fallback (offline mode). */
   const bestsellers = useMemo(() => {
@@ -1114,9 +1288,46 @@ export default function HomeScreen() {
     return live.length > 0 ? live : BESTSELLERS;
   }, [menu]);
 
-  /** Food subtotal = total, delivery (live) , payable = subtotal + delivery. */
-  const deliveryFee = lines.length > 0 ? shopCfg.deliveryCharge : 0;
-  const payable = total + deliveryFee;
+  /** Food subtotal = total; offer discount server mirror karke preview; payable = subtotal - discount + delivery. */
+  const catByItemId = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of menu) for (const i of c.items) m.set(i.id, c.key);
+    return m;
+  }, [menu]);
+  const pickedOffer = useMemo(
+    () =>
+      pickBestOffer(
+        offers,
+        lines.map((l) => ({
+          id: l.item.id,
+          qty: l.qty,
+          unit: l.unit,
+          category: catByItemId.get(l.item.id) ?? '',
+        })),
+        total,
+      ),
+    [offers, lines, total, catByItemId],
+  );
+  const offerDiscount = pickedOffer?.discount ?? 0;
+  // Cart strip ka timer (har second) — header hook, hamesha same order me chalega.
+  const offerLeftMs = useRemainingMs(pickedOffer?.offer.ends_at ?? null);
+  // Keyboard khula ho to bachi hui jagah me sheet fit karo (chrome + footer nikaal ke).
+  const availH = WIN_H - kbH;
+  const bodyMaxH = kbH > 0 ? Math.max(140, availH - 270) : SHEET_BODY_MAX_H;
+  // Zone check ho chuka ho to exact distance wala charge, warna base preview.
+  // Final charge hamesha server (GPS pin pe) lagata hai.
+  const previewDist = zoneState === 'inside' && zoneDist != null ? zoneDist : null;
+  const deliveryFee =
+    lines.length > 0
+      ? deliveryChargeFor(previewDist, {
+          deliveryMode: shopCfg.deliveryMode,
+          deliveryCharge: shopCfg.deliveryCharge,
+          deliveryBase: shopCfg.deliveryBase,
+          deliveryFreeM: shopCfg.deliveryFreeM,
+          deliveryPer500m: shopCfg.deliveryPer500m,
+        })
+      : 0;
+  const payable = total - offerDiscount + deliveryFee;
   /** Profile summary — paid orders ka kharcha. */
   const orderCount = orders.filter((o) => o.status === 'paid').length;
   const orderSpent = orders.filter((o) => o.status === 'paid').reduce((s, o) => s + o.total, 0);
@@ -1131,14 +1342,6 @@ export default function HomeScreen() {
   const pastOrders = paidOrders.filter(isPastOrder);
   const shownOrders = ordersTab === 'active' ? activeOrders : pastOrders;
 
-  if (!ready || !token) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={Brand.terracotta} />
-      </View>
-    );
-  }
-
   const initial = (user?.name?.trim()?.charAt(0) ?? user?.phone?.charAt(0) ?? 'D').toUpperCase();
 
   const openCategory = useCallback(
@@ -1149,10 +1352,37 @@ export default function HomeScreen() {
     [switchTab, selectFilter],
   );
 
+  /**
+   * Banner tap — sirf asli category pe khule. Admin ne galat target likha
+   * ho to kuch nahi hoga (khaali menu screen kabhi nahi khulegi).
+   */
+  const openBanner = useCallback(
+    (target: string | null) => {
+      if (!target) return;
+      if (target !== 'all' && !menu.some((c) => c.key === target)) return;
+      openCategory(target);
+    },
+    [menu, openCategory],
+  );
+
   const searching = results !== null && (tab === 'home' || tab === 'menu');
   const showSkeleton = menuLoading || tabLoading;
   // Filter shimmer only — chips stay visible, only dish rows shimmer.
   const showFilterShimmer = filterLoading && !menuLoading && !tabLoading;
+
+  /**
+   * Add Address pe seedha textbox pe le jao — dishes jyada ho to box neeche
+   * daba hota hai, user ko pata nahi chalta kaha likhna hai.
+   * Alert close hone ke baad scroll + focus (keyboard khul jayega).
+   */
+  const focusAddress = useCallback(() => {
+    setAlert(null);
+    setTimeout(() => {
+      sheetBodyRef.current?.scrollTo({ y: Math.max(0, addrBoxY.current - 12), animated: true });
+      // Scroll ke baad focus — thoda gap taaki keyboard sheet ko dhakka na de.
+      setTimeout(() => addrInputRef.current?.focus(), 350);
+    }, 300);
+  }, []);
 
   /**
    * Checkout flow — live geofence + live min food (admin Settings se),
@@ -1165,6 +1395,10 @@ export default function HomeScreen() {
   const continueCheckout = useCallback(async () => {
     const snap = snapRef.current;
     if (!snap || snap.lines.length === 0) return;
+    if (!token) {
+      router.replace('/auth');
+      return;
+    }
     setPlacingOrder(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -1194,6 +1428,17 @@ export default function HomeScreen() {
         lng: longitude,
         address: snap.address || null,
       });
+      // GPS pin milte hi exact distance-charge snap pe (display consistency;
+      // Razorpay amount hamesha server ka authoritative hota hai).
+      const exactFee = deliveryChargeFor(dist, {
+        deliveryMode: shopCfg.deliveryMode,
+        deliveryCharge: shopCfg.deliveryCharge,
+        deliveryBase: shopCfg.deliveryBase,
+        deliveryFreeM: shopCfg.deliveryFreeM,
+        deliveryPer500m: shopCfg.deliveryPer500m,
+      });
+      snap.deliveryFee = exactFee;
+      snap.payable = snap.total - (pickedOffer?.discount ?? 0) + exactFee;
       paymentDoneRef.current = false;
       setRzpOrderId(placed.order.id);
       setRzpData({ ...placed.razorpay, name: user?.name ?? undefined, phone: user?.phone });
@@ -1207,7 +1452,7 @@ export default function HomeScreen() {
       snapRef.current = null;
       setPlacingOrder(false);
     }
-  }, [token, user?.name, user?.phone, showAlert, forceLogout, shopCfg.radiusM]);
+  }, [token, user?.name, user?.phone, showAlert, forceLogout, shopCfg, pickedOffer, router]);
 
   const startCheckout = useCallback(async () => {
     if (validating || placingOrder) return;
@@ -1219,12 +1464,21 @@ export default function HomeScreen() {
     // Isi flow me fresh values turant lagao (state async hai, agli baar se apne aap fresh).
     let liveMin = shopCfg.minOrder;
     let liveCharge = shopCfg.deliveryCharge;
+    // Distance mode ke live params (freeze preview ke liye; exact GPS ke baad lagta hai).
+    let liveMode = shopCfg.deliveryMode;
+    let liveBase = shopCfg.deliveryBase;
+    let liveFreeM = shopCfg.deliveryFreeM;
+    let livePer500m = shopCfg.deliveryPer500m;
     try {
       const s = await api.shopStatus();
       setShopOpen(s.shop_open);
       applyShopStatus(s);
       if (typeof s.min_order === 'number' && Number.isFinite(s.min_order) && s.min_order >= 0) liveMin = Math.round(s.min_order);
       if (typeof s.delivery_charge === 'number' && Number.isFinite(s.delivery_charge) && s.delivery_charge >= 0) liveCharge = Math.round(s.delivery_charge);
+      if (s.delivery_mode === 'distance') liveMode = 'distance';
+      if (typeof s.delivery_base === 'number' && Number.isFinite(s.delivery_base) && s.delivery_base >= 0) liveBase = Math.round(s.delivery_base);
+      if (typeof s.delivery_free_m === 'number' && Number.isFinite(s.delivery_free_m) && s.delivery_free_m >= 0) liveFreeM = Math.round(s.delivery_free_m);
+      if (typeof s.delivery_per_500m === 'number' && Number.isFinite(s.delivery_per_500m) && s.delivery_per_500m >= 0) livePer500m = Math.round(s.delivery_per_500m);
       if (!s.shop_open) {
         showAlert(
           'Shop is closed',
@@ -1240,6 +1494,14 @@ export default function HomeScreen() {
         setValidating(false);
         return;
       }
+    }
+    // B0. Fresh offers — beech me nayi/expire hui deal ka preview sahi rahe.
+    // (Final hisaab backend karta hai — ye sirf display ke liye.)
+    try {
+      const freshOffers = await api.offers();
+      if (Array.isArray(freshOffers)) setOffers(freshOffers);
+    } catch {
+      // purani list pe bharosa, backend final guard karega.
     }
     // B. Checkout-time revalidation — cart ka fresh menu se milan.
     // Beech me OFF/deleted hui dishes auto-remove + naam ke sath batao.
@@ -1274,19 +1536,21 @@ export default function HomeScreen() {
     } catch {
       // Offline — cached cart pe bharosa, backend final guard karega.
     }
-    if (dummyMode || !token || token === 'dummy-token') {
-      showAlert(
-        'Go online to order',
-        'Ordering needs an internet connection to the Dev Ratna server. Please log in again when online.',
-        'warning',
-      );
+    if (!token) {
+      // Session gayi (logout/expiry) — wapas login pe. Ye guard sirf race ke liye hai,
+      // token gaya to redirect effect waise bhi login pe bhej deta hai.
       setValidating(false);
+      router.replace('/auth');
       return;
     }
     if (total < liveMin) {
+      const deliveryHint =
+        liveMode === 'distance'
+          ? `delivery ₹${liveBase} se (distance ke hisab se) extra`
+          : `delivery ₹${liveCharge} extra`;
       showAlert(
         `Minimum order ₹${liveMin}`,
-        `Add food worth ₹${liveMin - total} more (delivery ₹${liveCharge} extra) to place your order.`,
+        `Add food worth ₹${liveMin - total} more (${deliveryHint}) to place your order.`,
         'warning',
       );
       setValidating(false);
@@ -1294,13 +1558,25 @@ export default function HomeScreen() {
     }
     // Freeze the bill synchronously — everything after this (GPS wait,
     // place order) runs on the snapshot, immune to mid-flight edits.
-    const liveDeliveryFee = lines.length > 0 ? liveCharge : 0;
+    // Discount/delivery preview hai — final hisaab server (OfferEngine + GPS pin) karega.
+    // Distance mode me exact charge GPS ke baad continueCheckout lagata hai.
+    const liveDeliveryFee =
+      lines.length > 0
+        ? deliveryChargeFor(null, {
+            deliveryMode: liveMode,
+            deliveryCharge: liveCharge,
+            deliveryBase: liveBase,
+            deliveryFreeM: liveFreeM,
+            deliveryPer500m: livePer500m,
+          })
+        : 0;
+    const liveDiscount = pickedOffer?.discount ?? 0;
     const freezeBill = () => {
       snapRef.current = {
         lines: lines.map((l) => ({ ...l })),
         total,
         deliveryFee: liveDeliveryFee,
-        payable: total + liveDeliveryFee,
+        payable: total - liveDiscount + liveDeliveryFee,
         address: address.trim(),
       };
     };
@@ -1314,7 +1590,7 @@ export default function HomeScreen() {
           'Your house number and landmark help our rider reach your doorstep quickly. Without it, the rider may have to call you for directions. Delivery goes to your current GPS location either way.',
         type: 'warning',
         actions: [
-          { text: 'Add Address', primary: true, onPress: () => setAlert(null) },
+          { text: 'Add Address', primary: true, onPress: focusAddress },
           {
             text: 'Skip & Continue',
             onPress: () => {
@@ -1331,7 +1607,7 @@ export default function HomeScreen() {
     setValidating(false);
     freezeBill();
     void continueCheckout();
-  }, [validating, placingOrder, lines, total, token, dummyMode, address, shopOpen, shopCfg, applyShopStatus, removeLine, showAlert, continueCheckout]);
+  }, [validating, placingOrder, lines, total, token, address, shopOpen, shopCfg, applyShopStatus, removeLine, showAlert, continueCheckout, router, pickedOffer, focusAddress]);
 
   const handleRzpSuccess = useCallback(
     async (p: RazorpaySuccess) => {
@@ -1370,7 +1646,7 @@ export default function HomeScreen() {
   /** Report gateway failures/cancels so the backend keeps the true reason. Never throws. */
   const reportFailure = useCallback(
     async (reason: string, code?: string) => {
-      if (!token || token === 'dummy-token' || rzpOrderId == null) return;
+      if (!token || rzpOrderId == null) return;
       try {
         await api.failOrder(token, { order_id: rzpOrderId, reason, code });
       } catch (e) {
@@ -1398,6 +1674,16 @@ export default function HomeScreen() {
     },
     [showAlert, reportFailure],
   );
+
+  // Auth gate sab hooks ke BAAD — early return hooks se pehle hota to logout pe
+  // "Rendered fewer hooks than expected" crash aata tha (wahi app-band wali dikkat).
+  if (!ready || !token) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={Brand.terracotta} />
+      </View>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.root} edges={['top', 'bottom']}>
@@ -1467,15 +1753,16 @@ export default function HomeScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollBody}
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled">
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
         {showSkeleton ? (
           <ScreenSkeleton tab={tab} />
         ) : (
           <>
         {tab === 'home' && !searching && (
           <>
-            {/* Offer banners */}
-            <OfferCarousel onPress={openCategory} />
+            {/* Offer banners — admin live, warna brand slides */}
+            <OfferCarousel items={bannerSlides} onPress={openBanner} />
 
             {/* Categories */}
             <Text style={styles.sectionTitle}>What&apos;s on your mind?</Text>
@@ -1826,10 +2113,22 @@ export default function HomeScreen() {
                 if (loggingOut) return;
                 setLoggingOut(true);
                 try {
+                  // 1. Server pe token expire (8s timeout ke sath — hang nahi hoga).
                   await logout();
+                } catch {
+                  // logout() khud safe hai; phir bhi login pe bhejo.
                 } finally {
+                  // 2. Purane user ka cart/sheet sath me nahi jayega.
+                  clear();
+                  setCartOpen(false);
+                  setQuery('');
                   setLoggingOut(false);
-                  router.replace('/auth');
+                  // 3. Login pe — replace fail ho to push fallback.
+                  try {
+                    router.replace('/auth');
+                  } catch {
+                    router.push('/auth');
+                  }
                 }
               }}>
               <Text style={styles.logoutText}>{loggingOut ? 'Logging out…' : 'Log out'}</Text>
@@ -1880,20 +2179,40 @@ export default function HomeScreen() {
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1 }}>
-        <Pressable
-          style={styles.sheetBg}
-          onPress={() => {
-            if (!placingOrder) setCartOpen(false);
-          }}>
-          <Pressable style={[styles.sheet, { paddingBottom: Math.max(28, insets.bottom + 20) }]} onPress={(e) => e.stopPropagation()}>
+        <View style={styles.sheetBg}>
+          {/* Backdrop sibling hai (parent nahi) — taaki ScrollView ke touch
+              Pressable me na atke. Yehi scroll-stuck ka root cause tha. */}
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              if (!placingOrder) setCartOpen(false);
+            }}
+          />
+          <View
+            style={[
+              styles.sheet,
+              { paddingBottom: Math.max(28, insets.bottom + 20) },
+              kbH > 0 ? { maxHeight: availH - 16 } : null,
+            ]}>
             <View style={styles.sheetHandle} />
+            {/* Poora body ek hi scroll me — list alag + bill alag scroll wali ladai khatam.
+                Items kabhi address box ke peeche nahi dabenge, button hamesha pahunchega. */}
+            <ScrollView
+              ref={sheetBodyRef}
+              style={[styles.sheetBody, { maxHeight: bodyMaxH }]}
+              contentContainerStyle={styles.sheetBodyContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled
+              scrollEnabled
+              scrollEventThrottle={16}>
             <View style={styles.sheetHead}>
               <Text style={styles.sheetTitle}>Your Cart</Text>
               <Pressable onPress={clear}>
                 <Text style={styles.sheetClear}>Clear</Text>
               </Pressable>
             </View>
-            <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
+            <View style={styles.sheetList}>
               {lines.map(({ item, portion, qty, unit }) => (
                 <View key={`${item.id}:${portion}`} style={styles.sheetLine}>
                   <View style={styles.sheetInfo}>
@@ -1911,12 +2230,22 @@ export default function HomeScreen() {
                   <AddControl item={item} portion={portion} />
                 </View>
               ))}
-            </ScrollView>
-            <View style={styles.addrBox}>
+            </View>
+            <View
+              style={styles.addrBox}
+              onLayout={(e) => {
+                addrBoxY.current = e.nativeEvent.layout.y;
+              }}>
               <Text style={styles.addrLabel}>Delivery address (house no. + landmark) *</Text>
               <TextInput
+                ref={addrInputRef}
                 value={address}
                 onChangeText={setAddress}
+                onFocus={() => {
+                  // Keyboard aate hi address box tak scroll — dabega nahi.
+                  const y = Math.max(0, addrBoxY.current - 12);
+                  setTimeout(() => sheetBodyRef.current?.scrollTo({ y, animated: true }), 300);
+                }}
                 placeholder="e.g. H.No 12, Lane 3, Near Sakshi Electronics"
                 placeholderTextColor="#B4A69E"
                 style={styles.addrInput}
@@ -1932,6 +2261,26 @@ export default function HomeScreen() {
                 <Text style={styles.billLabel}>Item total</Text>
                 <Text style={styles.billValue}>₹{total}</Text>
               </View>
+              {pickedOffer && (
+                <View style={styles.offerStrip}>
+                  <Text style={styles.offerStripText} numberOfLines={2}>
+                    🎉 {pickedOffer.offer.name} applied{pickedOffer.freeItemName ? ` • ${pickedOffer.freeItemName} FREE` : ''}
+                    {offerLeftMs != null ? ` • ⏳ ${formatTimer(offerLeftMs)}` : ''}
+                  </Text>
+                </View>
+              )}
+              {offerDiscount > 0 && (
+                <View style={styles.billRow}>
+                  <Text style={[styles.billLabel, styles.billFree]}>Offer discount</Text>
+                  <Text style={[styles.billValue, styles.billFree]}>−₹{offerDiscount}</Text>
+                </View>
+              )}
+              {pickedOffer?.freeItemName && (
+                <View style={styles.billRow}>
+                  <Text style={styles.billLabel}>{pickedOffer.freeItemName} × 1</Text>
+                  <Text style={[styles.billValue, styles.billFree]}>FREE</Text>
+                </View>
+              )}
               <View style={styles.billRow}>
                 <Text style={styles.billLabel}>Delivery</Text>
                 <Text style={styles.billValue}>₹{deliveryFee}</Text>
@@ -1941,8 +2290,13 @@ export default function HomeScreen() {
                 <Text style={styles.billTotalText}>₹{payable}</Text>
               </View>
             </View>
+            </ScrollView>
+            {/* Fixed footer — button scroll me nahi jayega, hamesha dikhega. */}
+            <View style={styles.sheetFoot}>
             <Text style={styles.gateHint}>
-              Min food order ₹{shopCfg.minOrder} + ₹{shopCfg.deliveryCharge} delivery • Within {radiusLabel(shopCfg.radiusM)} of the shop
+              {shopCfg.deliveryMode === 'distance'
+                ? `Min food order ₹${shopCfg.minOrder} + delivery ₹${shopCfg.deliveryBase} se (distance ke hisab se) • Within ${radiusLabel(shopCfg.radiusM)} of the shop`
+                : `Min food order ₹${shopCfg.minOrder} + ₹${shopCfg.deliveryCharge} delivery • Within ${radiusLabel(shopCfg.radiusM)} of the shop`}
             </Text>
             <Pressable
               style={[styles.btn, styles.checkoutBtn, (validating || placingOrder) && styles.btnDisabled]}
@@ -1961,6 +2315,7 @@ export default function HomeScreen() {
                 </Text>
               )}
             </Pressable>
+            </View>
             {/* Placing lock — sirf delivery popup ke baad (GPS + place order) dikhega.
                 Pehle click (validating) me sirf button loader, koi overlay nahi. */}
             {placingOrder && (
@@ -1969,8 +2324,8 @@ export default function HomeScreen() {
                 <Text style={styles.lockText}>Placing your order…{'\n'}Please wait, don&apos;t press anything.</Text>
               </View>
             )}
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
         </KeyboardAvoidingView>
       </Modal>
 
@@ -2102,6 +2457,18 @@ const styles = StyleSheet.create({
   },
   bannerTitle: { fontSize: 21, fontFamily: Fonts.display },
   bannerText: { marginTop: 4, fontSize: 13, fontFamily: Fonts.body },
+  bannerTimer: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  bannerTimerText: { color: '#FFFFFF', fontSize: 12.5, fontFamily: Fonts.bodyBold, fontVariant: ['tabular-nums'] },
   bannerPill: {
     alignSelf: 'flex-start',
     marginTop: 10,
@@ -2588,7 +2955,12 @@ const styles = StyleSheet.create({
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sheetTitle: { fontSize: 22, color: Brand.espresso, fontFamily: Fonts.display },
   sheetClear: { fontSize: 13, color: Brand.terracotta, fontFamily: Fonts.bodyBold },
-  sheetList: { marginTop: 8, maxHeight: 280 },
+  // Single scroll body — pixel cap deterministic hai, isliye kabhi overlap nahi.
+  sheetBody: { flexGrow: 0, maxHeight: SHEET_BODY_MAX_H },
+  sheetBodyContent: { paddingBottom: 4 },
+  // Fixed footer — hint + Proceed button hamesha dikhenge, scroll nahi honge.
+  sheetFoot: { paddingTop: 10 },
+  sheetList: { marginTop: 8 },
   sheetLine: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2611,6 +2983,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
     minHeight: 48,
+    // Multiline bina cap ke sheet ko dhakka deta tha (upar-neeche bounce) — ab 4 line pe scroll.
+    maxHeight: 110,
     fontSize: 14,
     color: Brand.espresso,
     fontFamily: Fonts.body,
@@ -2619,6 +2993,15 @@ const styles = StyleSheet.create({
   addrHint: { fontSize: 12, lineHeight: 17, color: Brand.stone, fontFamily: Fonts.body },
   bill: { marginTop: 12, gap: 6 },
   billRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  offerStrip: {
+    backgroundColor: '#E9F5EC',
+    borderWidth: 1,
+    borderColor: '#BCD5C2',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  offerStripText: { fontSize: 13, color: '#1E4D2B', fontFamily: Fonts.bodyBold },
   billLabel: { fontSize: 13.5, color: Brand.stone, fontFamily: Fonts.body },
   billValue: { fontSize: 13.5, color: Brand.espresso, fontFamily: Fonts.bodySemi },
   billFree: { fontSize: 13.5, color: '#1E7A34', fontFamily: Fonts.bodyBold },
