@@ -1030,6 +1030,9 @@ export default function HomeScreen() {
   const paymentDoneRef = useRef(false);
   /** Frozen order for the in-flight checkout — see CheckoutSnap. */
   const snapRef = useRef<CheckoutSnap | null>(null);
+  // Proceed pe liya GPS pin (90s tak fresh) — cart me dikhaya charge aur
+  // payment wala pin ek hi rahe, double GPS wait na ho.
+  const posRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
   const tabRef = useRef<Tab>('home');
   const tabTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const filterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1314,11 +1317,14 @@ export default function HomeScreen() {
   // Keyboard khula ho to bachi hui jagah me sheet fit karo (chrome + footer nikaal ke).
   const availH = WIN_H - kbH;
   const bodyMaxH = kbH > 0 ? Math.max(140, availH - 270) : SHEET_BODY_MAX_H;
-  // Zone check ho chuka ho to exact distance wala charge, warna base preview.
+  // Zone check ho chuka ho to exact distance wala charge, warna kuch nahi.
+  // Location fetch se pehle delivery row hi nahi dikhti — guess wala base
+  // charge dikhana band (transparency: user wahi dekhe jo pay karega).
   // Final charge hamesha server (GPS pin pe) lagata hai.
   const previewDist = zoneState === 'inside' && zoneDist != null ? zoneDist : null;
+  const deliveryKnown = previewDist != null;
   const deliveryFee =
-    lines.length > 0
+    lines.length > 0 && deliveryKnown
       ? deliveryChargeFor(previewDist, {
           deliveryMode: shopCfg.deliveryMode,
           deliveryCharge: shopCfg.deliveryCharge,
@@ -1327,8 +1333,7 @@ export default function HomeScreen() {
           deliveryPer500m: shopCfg.deliveryPer500m,
         })
       : 0;
-  const payable = total - offerDiscount + deliveryFee;
-  /** Profile summary — paid orders ka kharcha. */
+    const payable = total - offerDiscount + deliveryFee;  /** Profile summary — paid orders ka kharcha. */
   const orderCount = orders.filter((o) => o.status === 'paid').length;
   const orderSpent = orders.filter((o) => o.status === 'paid').reduce((s, o) => s + o.total, 0);
   /** Orders tab me SIRF fully-paid orders — pending/failed kabhi nahi dikhenge. */
@@ -1384,10 +1389,54 @@ export default function HomeScreen() {
     }, 300);
   }, []);
 
+  // Cart location loader — Get Your Location button ka spinner.
+  const [locating, setLocating] = useState(false);
+  /**
+   * Cart me location fetch — button tap pe GPS pin, usi se delivery charge.
+   * Pin milte hi bill me Delivery + To pay + Proceed button aa jate hain.
+   * Pin 90s tak posRef me rehta hai taaki Proceed pe dobara wait na ho.
+   */
+  const fetchCartLocation = useCallback(async () => {
+    if (locating || placingOrder || validating) return;
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        showAlert(
+          'Location needed',
+          `We need your location to show delivery charge (within ${radiusLabel(shopCfg.radiusM)} of Dev Ratna Diner).`,
+          'warning',
+        );
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const dist = distanceMetres(pos.coords.latitude, pos.coords.longitude, SHOP.lat, SHOP.lng);
+      if (dist > shopCfg.radiusM) {
+        showAlert(
+          'Outside delivery area',
+          `We deliver within ${radiusLabel(shopCfg.radiusM)} of Dev Ratna Diner only. Please order when you are nearby.`,
+          'error',
+        );
+        return;
+      }
+      setZoneDist(Math.round(dist));
+      setZoneState('inside');
+      posRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude, at: Date.now() };
+      // Bill (Delivery + To pay + Proceed) dikhe — wahi tak scroll.
+      setTimeout(() => sheetBodyRef.current?.scrollToEnd({ animated: true }), 250);
+    } finally {
+      setLocating(false);
+    }
+  }, [locating, placingOrder, validating, shopCfg.radiusM, showAlert]);
+
   /**
    * Checkout flow — live geofence + live min food (admin Settings se),
    * then Razorpay order (backend) → payment → verify → confirm.
    * Address is optional landmark-only — eligibility is decided by live GPS.
+   *
+   * GPS pin Proceed pe startCheckout me liya jata hai (cart me exact charge
+   * dikhane ke liye) — yaha wahi cached pin reuse hota hai (90s fresh),
+   * taaki dikhaya charge aur billed pin ek hi ho. Cache na ho to khud lega.
    *
    * Runs ONLY on the frozen CheckoutSnap taken at Proceed tap — never on live
    * cart state, so the 2–3s GPS wait can't be corrupted by mid-flight edits.
@@ -1401,18 +1450,29 @@ export default function HomeScreen() {
     }
     setPlacingOrder(true);
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        showAlert(
-          'Location needed',
-          `We need your location to confirm you are within the ${radiusLabel(shopCfg.radiusM)} delivery area.`,
-          'warning',
-        );
-        return;
+      // Proceed wala fresh pin reuse — wahi pin jispe cart ka charge dikhaya tha.
+      let latitude: number;
+      let longitude: number;
+      const cached = posRef.current;
+      if (cached && Date.now() - cached.at < 90000) {
+        latitude = cached.lat;
+        longitude = cached.lng;
+        posRef.current = null;
+      } else {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          showAlert(
+            'Location needed',
+            `We need your location to confirm you are within the ${radiusLabel(shopCfg.radiusM)} delivery area.`,
+            'warning',
+          );
+          return;
+        }
+        // Order-time exact pin — delivery isi pe hogi, isliye High accuracy.
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        latitude = pos.coords.latitude;
+        longitude = pos.coords.longitude;
       }
-      // Order-time exact pin — delivery isi pe hogi, isliye High accuracy.
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      const { latitude, longitude } = pos.coords;
       const dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
       if (dist > shopCfg.radiusM) {
         showAlert(
@@ -1464,6 +1524,7 @@ export default function HomeScreen() {
     // Isi flow me fresh values turant lagao (state async hai, agli baar se apne aap fresh).
     let liveMin = shopCfg.minOrder;
     let liveCharge = shopCfg.deliveryCharge;
+    let liveRadius = shopCfg.radiusM;
     // Distance mode ke live params (freeze preview ke liye; exact GPS ke baad lagta hai).
     let liveMode = shopCfg.deliveryMode;
     let liveBase = shopCfg.deliveryBase;
@@ -1473,6 +1534,7 @@ export default function HomeScreen() {
       const s = await api.shopStatus();
       setShopOpen(s.shop_open);
       applyShopStatus(s);
+      if (typeof s.radius_m === 'number' && Number.isFinite(s.radius_m) && s.radius_m >= 100 && s.radius_m <= 20000) liveRadius = Math.round(s.radius_m);
       if (typeof s.min_order === 'number' && Number.isFinite(s.min_order) && s.min_order >= 0) liveMin = Math.round(s.min_order);
       if (typeof s.delivery_charge === 'number' && Number.isFinite(s.delivery_charge) && s.delivery_charge >= 0) liveCharge = Math.round(s.delivery_charge);
       if (s.delivery_mode === 'distance') liveMode = 'distance';
@@ -1556,20 +1618,64 @@ export default function HomeScreen() {
       setValidating(false);
       return;
     }
-    // Freeze the bill synchronously — everything after this (GPS wait,
-    // place order) runs on the snapshot, immune to mid-flight edits.
-    // Discount/delivery preview hai — final hisaab server (OfferEngine + GPS pin) karega.
-    // Distance mode me exact charge GPS ke baad continueCheckout lagata hai.
-    const liveDeliveryFee =
-      lines.length > 0
-        ? deliveryChargeFor(null, {
-            deliveryMode: liveMode,
-            deliveryCharge: liveCharge,
-            deliveryBase: liveBase,
-            deliveryFreeM: liveFreeM,
-            deliveryPer500m: livePer500m,
-          })
-        : 0;
+    // C. GPS pin — cart button wala fresh pin (90s) ho to wahi reuse,
+    // warna naya pin. User move kar sakta hai — purana pin chipakta nahi.
+    // Pin milte hi cart me exact charge set hota hai, usi ke baad payment.
+    let latitude: number;
+    let longitude: number;
+    let dist: number;
+    const cachedPin = posRef.current;
+    if (cachedPin && Date.now() - cachedPin.at < 90000) {
+      latitude = cachedPin.lat;
+      longitude = cachedPin.lng;
+      dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
+    } else {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          setValidating(false);
+          showAlert(
+            'Location needed',
+            `We need your location to show your exact delivery charge (within ${radiusLabel(liveRadius)} of Dev Ratna Diner).`,
+            'warning',
+          );
+          return;
+        }
+        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        latitude = pos.coords.latitude;
+        longitude = pos.coords.longitude;
+      } catch {
+        setValidating(false);
+        showAlert('Location needed', 'Could not get your GPS location. Please turn on location and try again.', 'warning');
+        return;
+      }
+      dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
+    }
+    if (dist > liveRadius) {
+      setValidating(false);
+      showAlert(
+        'Outside delivery area',
+        `We deliver within ${radiusLabel(liveRadius)} of Dev Ratna Diner only. Please order when you are nearby.`,
+        'error',
+      );
+      return;
+    }
+    // Cart preview turant exact pe — bill row me saf dikhega.
+    setZoneDist(Math.round(dist));
+    setZoneState('inside');
+    posRef.current = { lat: latitude, lng: longitude, at: Date.now() };
+    const distLabel = dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`;
+    // Freeze the bill synchronously — everything after this (place order)
+    // runs on the snapshot, immune to mid-flight edits.
+    // Discount preview hai — final hisaab server (OfferEngine + GPS pin) karega.
+    // Delivery charge GPS pin wala exact hai — yahi cart me dikhta hai, yahi bill me.
+    const liveDeliveryFee = deliveryChargeFor(dist, {
+      deliveryMode: liveMode,
+      deliveryCharge: liveCharge,
+      deliveryBase: liveBase,
+      deliveryFreeM: liveFreeM,
+      deliveryPer500m: livePer500m,
+    });
     const liveDiscount = pickedOffer?.discount ?? 0;
     const freezeBill = () => {
       snapRef.current = {
@@ -1603,10 +1709,28 @@ export default function HomeScreen() {
       });
       return;
     }
-    // Address pehle se hai — seedha placing phase (overlay ayega).
+    // Address pehle se hai — exact charge dikha ke confirm, phir payment.
+    // (Cart ki delivery row bhi exact pe update ho chuki hai.)
     setValidating(false);
-    freezeBill();
-    void continueCheckout();
+    const liveToPay = total - liveDiscount + liveDeliveryFee;
+    setAlert({
+      title: 'Confirm delivery charge',
+      message: `Your location is ${distLabel} from Dev Ratna Diner. Delivery charge ₹${liveDeliveryFee} — To pay ₹${liveToPay}.`,
+      type: 'info',
+      actions: [
+        { text: 'Edit Cart', onPress: () => setAlert(null) },
+        {
+          text: `Pay ₹${liveToPay}`,
+          primary: true,
+          onPress: () => {
+            setAlert(null);
+            freezeBill();
+            void continueCheckout();
+          },
+        },
+      ],
+    });
+    return;
   }, [validating, placingOrder, lines, total, token, address, shopOpen, shopCfg, applyShopStatus, removeLine, showAlert, continueCheckout, router, pickedOffer, focusAddress]);
 
   const handleRzpSuccess = useCallback(
@@ -2281,40 +2405,60 @@ export default function HomeScreen() {
                   <Text style={[styles.billValue, styles.billFree]}>FREE</Text>
                 </View>
               )}
-              <View style={styles.billRow}>
-                <Text style={styles.billLabel}>Delivery</Text>
-                <Text style={styles.billValue}>₹{deliveryFee}</Text>
-              </View>
-              <View style={[styles.billRow, styles.billTotal]}>
-                <Text style={styles.billTotalText}>To pay</Text>
-                <Text style={styles.billTotalText}>₹{payable}</Text>
-              </View>
+              {deliveryKnown && (
+                <View style={styles.billRow}>
+                  <Text style={styles.billLabel}>Delivery</Text>
+                  <Text style={styles.billValue}>₹{deliveryFee}</Text>
+                </View>
+              )}
+              {deliveryKnown && (
+                <View style={[styles.billRow, styles.billTotal]}>
+                  <Text style={styles.billTotalText}>To pay</Text>
+                  <Text style={styles.billTotalText}>₹{payable}</Text>
+                </View>
+              )}
             </View>
             </ScrollView>
-            {/* Fixed footer — button scroll me nahi jayega, hamesha dikhega. */}
+            {/* Fixed footer — location se pehle Get Location, uske baad Proceed. */}
             <View style={styles.sheetFoot}>
             <Text style={styles.gateHint}>
               {shopCfg.deliveryMode === 'distance'
                 ? `Min food order ₹${shopCfg.minOrder} + delivery ₹${shopCfg.deliveryBase} se (distance ke hisab se) • Within ${radiusLabel(shopCfg.radiusM)} of the shop`
                 : `Min food order ₹${shopCfg.minOrder} + ₹${shopCfg.deliveryCharge} delivery • Within ${radiusLabel(shopCfg.radiusM)} of the shop`}
             </Text>
-            <Pressable
-              style={[styles.btn, styles.checkoutBtn, (validating || placingOrder) && styles.btnDisabled]}
-              onPress={startCheckout}
-              disabled={validating || placingOrder}>
-              {(validating || placingOrder) ? (
-                <View style={styles.checkoutBusyRow}>
-                  <ActivityIndicator size="small" color={Brand.white} />
+            {!deliveryKnown ? (
+              <Pressable
+                style={[styles.btn, styles.checkoutBtn, locating && styles.btnDisabled]}
+                onPress={fetchCartLocation}
+                disabled={locating}>
+                {locating ? (
+                  <View style={styles.checkoutBusyRow}>
+                    <ActivityIndicator size="small" color={Brand.white} />
+                    <Text style={styles.btnText}>Fetching location…</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.btnText}>📍 Get Your Location</Text>
+                )}
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.btn, styles.checkoutBtn, (validating || placingOrder) && styles.btnDisabled]}
+                onPress={startCheckout}
+                disabled={validating || placingOrder}>
+                {(validating || placingOrder) ? (
+                  <View style={styles.checkoutBusyRow}>
+                    <ActivityIndicator size="small" color={Brand.white} />
+                    <Text style={styles.btnText}>
+                      {validating ? 'Checking… Please wait' : 'Placing your order…'}
+                    </Text>
+                  </View>
+                ) : (
                   <Text style={styles.btnText}>
-                    {validating ? 'Checking… Please wait' : 'Placing your order…'}
+                    {`Proceed to Checkout • ₹${payable}`}
                   </Text>
-                </View>
-              ) : (
-                <Text style={styles.btnText}>
-                  {`Proceed to Checkout • ₹${payable}`}
-                </Text>
-              )}
-            </Pressable>
+                )}
+              </Pressable>
+            )}
             </View>
             {/* Placing lock — sirf delivery popup ke baad (GPS + place order) dikhega.
                 Pehle click (validating) me sirf button loader, koi overlay nahi. */}
