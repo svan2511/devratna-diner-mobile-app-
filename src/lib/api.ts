@@ -18,7 +18,6 @@
 export const API_BASE_URL = 'https://devratna-apis.onrender.com/api/v1';
 //export const API_BASE_URL = 'http://10.35.185.212:8000/api/v1';
 
-
 export type ApiUser = {
   id: number;
   name: string | null;

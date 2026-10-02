@@ -236,6 +236,9 @@ const BANNER_W = Dimensions.get('window').width - 32 - 44;
 // (deterministic pixels, taaki list + bill kabhi button ko dhakka na de —
 // button hamesha neeche fixed dikhega, upar wala hissa scroll hoga.)
 const SHEET_BODY_MAX_H = Math.max(200, Dimensions.get('window').height * 0.85 - 230);
+// GPS pin kitni der tak fresh — isse purana pin payment pe reuse nahi hoga.
+// (Proceed ka pin seconds purana hota hai; 90s se purana = dobara Proceed.)
+const POS_FRESH_MS = 90000;
 // Keyboard khula ho to sheet us hisab se sikude — warna address box dab jata hai.
 const WIN_H = Dimensions.get('window').height;
 
@@ -958,6 +961,18 @@ export default function HomeScreen() {
     };
   }, []);
 
+  // Cart khali hote hi location reset — purana pin/charge chipakta nahi.
+  // (Blunder tha: clear ke baad dobara add pe Get Location button hi nahi aata tha,
+  // aur user move kar chuka ho to purane pin se order lag jata tha.)
+  useEffect(() => {
+    if (lines.length === 0) {
+      setZoneState('idle');
+      setZoneDist(null);
+      posRef.current = null;
+      snapRef.current = null;
+    }
+  }, [lines.length]);
+
   // Profile inputs server ke user se sync (ek user ke liye ek baar — typing beech me nahi kategi).
   useEffect(() => {
     setProfileName(user?.name ?? '');
@@ -1030,7 +1045,7 @@ export default function HomeScreen() {
   const paymentDoneRef = useRef(false);
   /** Frozen order for the in-flight checkout — see CheckoutSnap. */
   const snapRef = useRef<CheckoutSnap | null>(null);
-  // Proceed pe liya GPS pin (90s tak fresh) — cart me dikhaya charge aur
+  // Proceed ka GPS pin (POS_FRESH_MS tak fresh) — cart me dikhaya charge aur
   // payment wala pin ek hi rahe, double GPS wait na ho.
   const posRef = useRef<{ lat: number; lng: number; at: number } | null>(null);
   const tabRef = useRef<Tab>('home');
@@ -1450,29 +1465,23 @@ export default function HomeScreen() {
     }
     setPlacingOrder(true);
     try {
-      // Proceed wala fresh pin reuse — wahi pin jispe cart ka charge dikhaya tha.
-      let latitude: number;
-      let longitude: number;
+      // Sirf Proceed wala fresh pin — stale pin se payment kabhi nahi.
+      // (Proceed ke seconds baad Pay dabta hai to pin fresh hi milta hai.)
+      // Pin purana/missing ho (confirm pe ruke rahe, app background gayi) to
+      // dobara Proceed karwao — naya pin + naya charge + naya confirm.
       const cached = posRef.current;
-      if (cached && Date.now() - cached.at < 90000) {
-        latitude = cached.lat;
-        longitude = cached.lng;
+      if (!cached || Date.now() - cached.at > POS_FRESH_MS) {
         posRef.current = null;
-      } else {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          showAlert(
-            'Location needed',
-            `We need your location to confirm you are within the ${radiusLabel(shopCfg.radiusM)} delivery area.`,
-            'warning',
-          );
-          return;
-        }
-        // Order-time exact pin — delivery isi pe hogi, isliye High accuracy.
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        latitude = pos.coords.latitude;
-        longitude = pos.coords.longitude;
+        showAlert(
+          'Location expired',
+          'Your location check expired. Please tap Proceed again for fresh delivery charge.',
+          'warning',
+        );
+        return;
       }
+      const latitude = cached.lat;
+      const longitude = cached.lng;
+      posRef.current = null;
       const dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
       if (dist > shopCfg.radiusM) {
         showAlert(
@@ -1618,39 +1627,33 @@ export default function HomeScreen() {
       setValidating(false);
       return;
     }
-    // C. GPS pin — cart button wala fresh pin (90s) ho to wahi reuse,
-    // warna naya pin. User move kar sakta hai — purana pin chipakta nahi.
-    // Pin milte hi cart me exact charge set hota hai, usi ke baad payment.
+    // C. Proceed pe HAMESHA fresh GPS pin — purana pin kabhi reuse nahi.
+    // User move kar sakta hai: purane pin se geofence pass + purana charge
+    // freeze ho jana hi sabse bada loophole tha. Har Proceed = naya pin,
+    // usi se geofence + cart display + freeze + confirm. Button wala pin
+    // sirf display/pre-check ke liye tha, faisla hamesha is fresh pin pe.
     let latitude: number;
     let longitude: number;
-    let dist: number;
-    const cachedPin = posRef.current;
-    if (cachedPin && Date.now() - cachedPin.at < 90000) {
-      latitude = cachedPin.lat;
-      longitude = cachedPin.lng;
-      dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
-    } else {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setValidating(false);
-          showAlert(
-            'Location needed',
-            `We need your location to show your exact delivery charge (within ${radiusLabel(liveRadius)} of Dev Ratna Diner).`,
-            'warning',
-          );
-          return;
-        }
-        const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        latitude = pos.coords.latitude;
-        longitude = pos.coords.longitude;
-      } catch {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
         setValidating(false);
-        showAlert('Location needed', 'Could not get your GPS location. Please turn on location and try again.', 'warning');
+        showAlert(
+          'Location needed',
+          `We need your location to show your exact delivery charge (within ${radiusLabel(liveRadius)} of Dev Ratna Diner).`,
+          'warning',
+        );
         return;
       }
-      dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      latitude = pos.coords.latitude;
+      longitude = pos.coords.longitude;
+    } catch {
+      setValidating(false);
+      showAlert('Location needed', 'Could not get your GPS location. Please turn on location and try again.', 'warning');
+      return;
     }
+    const dist = distanceMetres(latitude, longitude, SHOP.lat, SHOP.lng);
     if (dist > liveRadius) {
       setValidating(false);
       showAlert(
