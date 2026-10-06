@@ -1,9 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
-import { api, type ApiUser } from '@/lib/api';
+import { api, SessionExpiredError, type ApiUser } from '@/lib/api';
 
 const TOKEN_KEY = 'devratna.auth.token';
+const USER_KEY = 'devratna.auth.user';
 
 /**
  * Single server-token login — koi dummy/offline session nahi.
@@ -39,6 +40,31 @@ async function saveToken(token: string | null) {
   }
 }
 
+async function saveUser(user: ApiUser | null) {
+  try {
+    if (Platform.OS === 'web') {
+      if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+      else localStorage.removeItem(USER_KEY);
+      return;
+    }
+    if (user) await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
+    else await SecureStore.deleteItemAsync(USER_KEY);
+  } catch {
+    // Cache miss = memory-only session, token still valid.
+  }
+}
+
+async function loadUser(): Promise<ApiUser | null> {
+  try {
+    const raw =
+      Platform.OS === 'web' ? localStorage.getItem(USER_KEY) : await SecureStore.getItemAsync(USER_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as ApiUser;
+  } catch {
+    return null;
+  }
+}
+
 async function loadToken(): Promise<string | null> {
   try {
     if (Platform.OS === 'web') return localStorage.getItem(TOKEN_KEY);
@@ -54,16 +80,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
 
   // Restore the saved session on app start.
+  // - 401/419 (revoke/DB wipe) = real expiry -> clear and go to login.
+  // - Network/server-down/cold-start = keep token + cached user, stay logged in.
   useEffect(() => {
     (async () => {
-      const saved = await loadToken();
+      const [saved, cachedUser] = await Promise.all([loadToken(), loadUser()]);
       if (saved) {
+        // Cached session turant dikhao (offline/minimize-resume safe).
+        setToken(saved);
+        if (cachedUser) setUser(cachedUser);
         try {
           const { user: me } = await api.me(saved);
-          setToken(saved);
           setUser(me);
-        } catch {
-          await saveToken(null);
+          await saveUser(me);
+        } catch (e) {
+          if (e instanceof SessionExpiredError) {
+            setToken(null);
+            setUser(null);
+            await saveToken(null);
+            await saveUser(null);
+          }
+          // Baaki errors (network/timeout/5xx) pe token mat udao —
+          // user agle foreground/refresh pe silently sync ho jayega.
         }
       }
       setReady(true);
@@ -80,6 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(res.token);
     setUser(res.user);
     await saveToken(res.token);
+    await saveUser(res.user);
     return { isNew: res.is_new };
   }, []);
 
@@ -88,6 +127,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!token) throw new Error('Please log in again.');
       const res = await api.updateProfile(token, body);
       setUser(res.user);
+      await saveUser(res.user);
     },
     [token],
   );
@@ -107,12 +147,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     await saveToken(null);
+    await saveUser(null);
   }, [token]);
 
   const forceLogout = useCallback(async () => {
     setToken(null);
     setUser(null);
     await saveToken(null);
+    await saveUser(null);
   }, []);
 
   const value = useMemo(
