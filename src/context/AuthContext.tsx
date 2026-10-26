@@ -17,7 +17,11 @@ type AuthState = {
   user: ApiUser | null;
   ready: boolean;
   requestOtp: (phone: string) => Promise<{ devOtp?: string; expiresIn: number }>;
-  verifyOtp: (phone: string, otp: string, name?: string) => Promise<{ isNew: boolean }>;
+  verifyOtp: (
+    phone: string,
+    otp: string,
+    name?: string,
+  ) => Promise<{ isNew: boolean; isRider: boolean }>;
   updateProfile: (body: { name?: string; default_address?: string | null }) => Promise<void>;
   logout: () => Promise<void>;
   /** Clear the local session without hitting the server — for 401 (expired/revoked token). */
@@ -119,7 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(res.user);
     await saveToken(res.token);
     await saveUser(res.user);
-    return { isNew: res.is_new };
+    return { isNew: res.is_new, isRider: res.user.is_rider === true };
   }, []);
 
   const updateProfile = useCallback(

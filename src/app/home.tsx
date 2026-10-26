@@ -582,9 +582,11 @@ function formatOrderDate(iso: string | null): string {
 
 /** Premium order card — dark receipt header, live kitchen strip, itemised bill + journey. */
 function OrderCard({ order }: { order: ApiHistoryOrder }) {
+  const router = useRouter();
   const tone = STATUS_TONE[order.status] ?? { bg: Brand.clay, fg: Brand.stone, label: order.status };
   const ful = order.fulfillment_status ?? 'new';
   const ftone = FULFILL_TONE[ful] ?? { bg: Brand.clay, fg: Brand.stone, label: ful };
+  const canTrack = order.status === 'paid' && ful !== 'cancelled' && (order.rider != null || ful === 'delivered');
   const stepIdx = TRACK_STEPS.findIndex((s) => s.key === ful);
   const count = order.items.reduce((s, l) => s + (l.qty || 0), 0);
   const subtotal = order.subtotal ?? order.items.reduce((s, l) => s + l.unit * l.qty, 0);
@@ -691,6 +693,19 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
             })}
           </View>
         )}
+
+        {canTrack && (
+          <Pressable
+            style={styles.trackBtn}
+            onPress={() =>
+              router.push({ pathname: '/order/[id]/tracking', params: { id: String(order.id) } })
+            }>
+            <Text style={styles.trackBtnText}>
+              {ful === 'delivered' ? 'View delivery details' : 'Track rider live'}
+            </Text>
+            <Text style={styles.trackBtnArrow}>›</Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -785,6 +800,11 @@ export default function HomeScreen() {
   const { lines, count, total, clear, add, removeLine } = useCart();
   // System nav / gesture bar ke upar sheet button rahe — dev build me checkout dab gaya tha.
   const insets = useSafeAreaInsets();
+
+  // Rider login ka ghar rider dashboard hai, customer home nahi.
+  useEffect(() => {
+    if (ready && user?.is_rider) router.replace('/rider');
+  }, [ready, user?.is_rider, router]);
 
   const [tab, setTab] = useState<Tab>('home');
   const [menu, setMenu] = useState(MENU);
@@ -2976,6 +2996,18 @@ const styles = StyleSheet.create({
   trackLabelDone: { color: Brand.espresso },
   trackLine: { position: 'absolute', top: 12, left: '55%', right: '-45%', height: 2, backgroundColor: Brand.bone },
   trackLineDone: { backgroundColor: '#1E7A34' },
+  trackBtn: {
+    marginTop: 14,
+    backgroundColor: Brand.espresso,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  trackBtnText: { color: Brand.cream, fontSize: 14, fontFamily: Fonts.bodyBold },
+  trackBtnArrow: { color: Brand.gold, fontSize: 22, fontFamily: Fonts.body, marginTop: -2 },
   orderTotalLabel: { fontSize: 13, color: Brand.stone, fontFamily: Fonts.bodySemi },
   orderTotalValue: { fontSize: 18, color: Brand.terracotta, fontFamily: Fonts.bodyExtra },
   profileCard: { marginTop: 8, alignItems: 'center', gap: 4 },

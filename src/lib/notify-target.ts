@@ -29,3 +29,10 @@ export function ordersTabFromPushData(data: Record<string, unknown> | null | und
 export function isOrderPush(data: Record<string, unknown> | null | undefined): boolean {
   return typeof data?.type === 'string' && data.type.startsWith('order');
 }
+
+/** Rider ko naya delivery assign hua - rider dashboard kholo. */
+export function isRiderAssignmentPush(
+  data: Record<string, unknown> | null | undefined,
+): boolean {
+  return data?.type === 'rider_assignment';
+}

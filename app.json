@@ -52,7 +52,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Dev Ratna checks your location to confirm you are within the 1 km delivery area before placing an order."
+          "locationWhenInUsePermission": "Dev Ratna uses your location to confirm delivery coverage and, for delivery partners, to share live delivery location with the customer."
         }
       ]
     ],

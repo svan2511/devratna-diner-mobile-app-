@@ -37,7 +37,7 @@ function isValidPhone(p: string): boolean {
  */
 export default function AuthScreen() {
   const router = useRouter();
-  const { token, ready, requestOtp, verifyOtp } = useAuth();
+  const { token, user, ready, requestOtp, verifyOtp } = useAuth();
 
   const [step, setStep] = useState<Step>('phone');
   const [phone, setPhone] = useState('');
@@ -68,8 +68,8 @@ export default function AuthScreen() {
   }
 
   useEffect(() => {
-    if (ready && token) router.replace('/home');
-  }, [ready, token, router]);
+    if (ready && token) router.replace(user?.is_rider ? '/rider' : '/home');
+  }, [ready, token, user?.is_rider, router]);
 
   // One ticker drives both the resend cooldown and the OTP validity countdown.
   useEffect(() => {
@@ -135,8 +135,8 @@ export default function AuthScreen() {
     setError(null);
     setLoading(true);
     try {
-      await verifyOtp(phone, finalCode);
-      router.replace('/home');
+      const result = await verifyOtp(phone, finalCode);
+      router.replace(result.isRider ? '/rider' : '/home');
     } catch (e) {
       verifyingRef.current = false;
       setError(e instanceof Error ? e.message : 'Verification failed.');

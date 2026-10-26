@@ -4,19 +4,11 @@
  * - EXPO_PUBLIC_API_URL wins when set (highest priority).
  * - Android emulator: 10.0.2.2, everything else (iOS sim / web): localhost.
  */
-// function defaultBaseUrl(): string {
-//   if (process.env.EXPO_PUBLIC_API_URL) return process.env.EXPO_PUBLIC_API_URL;
-//   if (Platform.OS === 'android') return 'http://10.0.2.2:8000/api/v1';
-//   return 'http://127.0.0.1:8000/api/v1';
-// }
-
 // Local testing: EXPO_PUBLIC_API_URL set ho to wahi (bundle time pe inline hota hai).
 // Production build me EXPO_PUBLIC_API_URL set karo, warna Render production URL lagega.
-// const envBase = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
-// export const API_BASE_URL = envBase !== '' ? envBase : 'https://devratna-apis.onrender.com/api/v1';
-
-export const API_BASE_URL = 'https://devratna-apis.onrender.com/api/v1';
-//export const API_BASE_URL = 'http://10.181.31.212/api/v1';
+const envBase = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/+$/, '');
+export const API_BASE_URL =
+  envBase !== '' ? envBase : 'https://devratna-apis.onrender.com/api/v1';
 
 export type ApiUser = {
   id: number;
@@ -25,6 +17,7 @@ export type ApiUser = {
   default_address: string | null;
   phone_verified: boolean;
   is_profile_complete: boolean;
+  is_rider?: boolean;
 };
 
 export type ApiMenuItem = {
@@ -116,6 +109,55 @@ export type ApiVerifiedOrder = {
   order: { id: number; total: number; status: string };
 };
 
+export type ApiRiderLocation = {
+  lat: number;
+  lng: number;
+  accuracy_m: number | null;
+  recorded_at: string | null;
+  age_seconds: number | null;
+  is_stale: boolean;
+};
+
+export type ApiRiderProfile = {
+  id: number;
+  user_id: number;
+  name: string | null;
+  phone: string | null;
+  vehicle_type: string;
+  vehicle_number: string | null;
+  is_active: boolean;
+  is_online: boolean;
+  last_location: ApiRiderLocation | null;
+};
+
+export type ApiRiderOrder = {
+  id: number;
+  status: string;
+  fulfillment_status: string;
+  items: Array<{ id: number; name: string; portion: string; qty: number; unit: number; free?: boolean }>;
+  total: number;
+  delivery_address: string | null;
+  kitchen_note: string | null;
+  customer: { name: string | null; phone: string | null } | null;
+  customer_lat: number | null;
+  customer_lng: number | null;
+  distance_m: number | null;
+  maps_url: string | null;
+  rider_assigned_at: string | null;
+  rider_accepted_at: string | null;
+  picked_up_at: string | null;
+  delivered_at: string | null;
+  rider_location: ApiRiderLocation | null;
+  created_at: string | null;
+};
+
+export type ApiRiderAssignments = {
+  rider: ApiRiderProfile;
+  shop: { lat: number; lng: number };
+  active_order: ApiRiderOrder | null;
+  history: ApiRiderOrder[];
+};
+
 export type ApiHistoryOrder = {
   id: number;
   subtotal: number;
@@ -128,10 +170,37 @@ export type ApiHistoryOrder = {
   failure_reason: string | null;
   items: Array<{ id: number; name: string; portion: string; qty: number; unit: number; free?: boolean }>;
   delivery_address: string | null;
+  rider?: {
+    name: string | null;
+    phone: string | null;
+    vehicle_type?: string;
+    vehicle_number?: string | null;
+  } | null;
+  rider_assigned_at?: string | null;
+  rider_accepted_at?: string | null;
+  picked_up_at?: string | null;
   created_at: string | null;
   paid_at?: string | null;
   ready_at?: string | null;
   delivered_at?: string | null;
+};
+
+export type ApiOrderTracking = {
+  order: ApiHistoryOrder;
+  shop: { lat: number; lng: number };
+  destination: { lat: number; lng: number } | null;
+  rider: {
+    id: number;
+    name: string | null;
+    phone: string | null;
+    vehicle_type: string;
+    vehicle_number: string | null;
+    is_online: boolean;
+  } | null;
+  rider_location: ApiRiderLocation | null;
+  distance_to_customer_m: number | null;
+  eta_minutes: number | null;
+  is_stale: boolean;
 };
 
 type ApiEnvelope<T> = {
@@ -280,5 +349,30 @@ export const api = {
   },
   pushToken(token: string, body: { token: string; platform?: string }) {
     return postJson<null>('/push-token', body, token);
+  },
+  trackOrder(token: string, orderId: number) {
+    return getJson<ApiOrderTracking>(`/orders/${orderId}/tracking`, token);
+  },
+  riderAssignments(token: string) {
+    return getJson<ApiRiderAssignments>('/rider/assignments', token);
+  },
+  setRiderAvailability(token: string, isOnline: boolean) {
+    return postJson<{ rider: ApiRiderProfile }>('/rider/availability', { is_online: isOnline }, token);
+  },
+  acceptRide(token: string, orderId: number) {
+    return postJson<{ order: ApiRiderOrder }>(`/rider/orders/${orderId}/accept`, {}, token);
+  },
+  pickupRide(token: string, orderId: number) {
+    return postJson<{ order: ApiRiderOrder }>(`/rider/orders/${orderId}/pickup`, {}, token);
+  },
+  deliverRide(token: string, orderId: number) {
+    return postJson<{ order: ApiRiderOrder }>(`/rider/orders/${orderId}/deliver`, {}, token);
+  },
+  sendRiderLocation(
+    token: string,
+    orderId: number,
+    body: { latitude: number; longitude: number; accuracy_m?: number | null },
+  ) {
+    return postJson<{ location: ApiRiderLocation }>(`/rider/orders/${orderId}/location`, body, token);
   },
 };

@@ -16,7 +16,12 @@ import { AuthProvider } from '@/context/AuthContext';
 import { CartProvider } from '@/context/CartContext';
 import { AppSplash } from '@/components/app-splash';
 import { getInitialNotificationData } from '@/lib/push';
-import { isOrderPush, ordersTabFromPushData, setPendingOrdersTab } from '@/lib/notify-target';
+import {
+  isOrderPush,
+  isRiderAssignmentPush,
+  ordersTabFromPushData,
+  setPendingOrdersTab,
+} from '@/lib/notify-target';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -56,7 +61,9 @@ export default function RootLayout() {
     (async () => {
       try {
         const data = await getInitialNotificationData();
-        if (data && isOrderPush(data)) {
+        if (data && isRiderAssignmentPush(data)) {
+          router.replace('/rider');
+        } else if (data && isOrderPush(data)) {
           setPendingOrdersTab(ordersTabFromPushData(data));
           router.replace('/home');
         }
@@ -82,6 +89,8 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="auth" />
         <Stack.Screen name="home" />
+        <Stack.Screen name="rider" />
+        <Stack.Screen name="order/[id]/tracking" />
       </Stack>
       </CartProvider>
     </AuthProvider>
