@@ -2768,7 +2768,7 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: Brand.espresso, borderColor: Brand.espresso },
   chipText: { fontSize: 13, color: Brand.stone, fontFamily: Fonts.bodySemi },
   chipTextActive: { color: Brand.cream },
-  dealCard: { marginTop: 18, borderRadius: 18, overflow: 'hidden', height: 196 },
+  dealCard: { marginTop: 18, borderRadius: 18, overflow: 'hidden', minHeight: 196 },
   dealImg: { ...StyleSheet.absoluteFill, width: '100%', height: '100%' },
   dealScrim: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(36,26,23,0.62)' },
   dealBody: { flex: 1, justifyContent: 'flex-end', padding: 16 },

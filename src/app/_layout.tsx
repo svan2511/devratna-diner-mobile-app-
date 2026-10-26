@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Platform, Text, TextInput } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -18,6 +19,16 @@ import { getInitialNotificationData } from '@/lib/push';
 import { isOrderPush, ordersTabFromPushData, setPendingOrdersTab } from '@/lib/notify-target';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// System font-size (Settings → Display) se design na toote — text max 15%
+// bada hoga, usse zyada nahi. Default font pe scale 1.0 = design byte-same.
+// (Web pe ye prop exist nahi karti, isliye native-only.)
+if (Platform.OS !== 'web') {
+  const F = Text as unknown as { defaultProps?: Record<string, unknown> };
+  F.defaultProps = { ...(F.defaultProps ?? {}), maxFontSizeMultiplier: 1.15 };
+  const I = TextInput as unknown as { defaultProps?: Record<string, unknown> };
+  I.defaultProps = { ...(I.defaultProps ?? {}), maxFontSizeMultiplier: 1.15 };
+}
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
