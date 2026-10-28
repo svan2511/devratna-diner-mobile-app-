@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { api, SessionExpiredError, type ApiUser } from '@/lib/api';
+import { stopRiderLocationTracking } from '@/lib/rider-location';
 
 const TOKEN_KEY = 'devratna.auth.token';
 const USER_KEY = 'devratna.auth.user';
@@ -99,6 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await saveUser(me);
         } catch (e) {
           if (e instanceof SessionExpiredError) {
+            await stopRiderLocationTracking();
             setToken(null);
             setUser(null);
             await saveToken(null);
@@ -107,6 +109,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Baaki errors (network/timeout/5xx) pe token mat udao —
           // user agle foreground/refresh pe silently sync ho jayega.
         }
+      } else {
+        await stopRiderLocationTracking();
       }
       setReady(true);
     })();
@@ -148,6 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Clear the local session even when server logout fails/times out.
       }
     }
+    await stopRiderLocationTracking();
     setToken(null);
     setUser(null);
     await saveToken(null);
@@ -155,6 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [token]);
 
   const forceLogout = useCallback(async () => {
+    await stopRiderLocationTracking();
     setToken(null);
     setUser(null);
     await saveToken(null);

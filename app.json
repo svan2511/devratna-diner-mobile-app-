@@ -21,7 +21,10 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ],
       "package": "com.anil05.DevRatnaMobileApp",
       "googleServicesFile": "./google-services.json"
@@ -52,7 +55,11 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Dev Ratna uses your location to confirm delivery coverage and, for delivery partners, to share live delivery location with the customer."
+          "locationWhenInUsePermission": "Dev Ratna uses your location to confirm delivery coverage and, for delivery partners, to share live delivery location with the customer.",
+          "locationAlwaysAndWhenInUsePermission": "Dev Ratna uses your location in the background so delivery partners can share their live location with the customer.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
         }
       ]
     ],

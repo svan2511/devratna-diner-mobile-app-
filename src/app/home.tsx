@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { Brand, Fonts } from '@/constants/brand';
 import { useAuth } from '@/context/AuthContext';
@@ -580,13 +580,61 @@ function formatOrderDate(iso: string | null): string {
   });
 }
 
+/**
+ * Accepted rider ki mini card — naam, vehicle aur call button.
+ * Delivery ke baad sirf naam rehta hai: vehicle/phone/call sab hide.
+ */
+function OrderRiderCard({
+  rider,
+  delivered,
+}: {
+  rider: NonNullable<ApiHistoryOrder['rider']>;
+  delivered: boolean;
+}) {
+  const initial = (rider.name ?? 'R').trim().charAt(0).toUpperCase();
+  const meta = [rider.vehicle_type, rider.vehicle_number, rider.phone ? `+91 ${rider.phone}` : null]
+    .filter(Boolean)
+    .join(' • ');
+
+  return (
+    <View style={styles.ordRider}>
+      <View style={styles.ordRiderAvatar}>
+        <Text style={styles.ordRiderAvatarText}>{initial}</Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.ordRiderName} numberOfLines={1}>
+          {rider.name ?? 'Delivery partner'}
+        </Text>
+        {!delivered ? (
+          <Text style={styles.ordRiderMeta} numberOfLines={1}>
+            {meta}
+          </Text>
+        ) : null}
+      </View>
+      {!delivered && rider.phone ? (
+        <Pressable
+          style={styles.ordRiderCall}
+          onPress={() => void Linking.openURL(`tel:+91${rider.phone}`)}>
+          <Text style={styles.ordRiderCallText}>Call</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 /** Premium order card — dark receipt header, live kitchen strip, itemised bill + journey. */
 function OrderCard({ order }: { order: ApiHistoryOrder }) {
   const router = useRouter();
   const tone = STATUS_TONE[order.status] ?? { bg: Brand.clay, fg: Brand.stone, label: order.status };
   const ful = order.fulfillment_status ?? 'new';
   const ftone = FULFILL_TONE[ful] ?? { bg: Brand.clay, fg: Brand.stone, label: ful };
-  const canTrack = order.status === 'paid' && ful !== 'cancelled' && (order.rider != null || ful === 'delivered');
+  const delivered = ful === 'delivered' || order.delivered_at != null;
+  // Live rider map sirf pickup ke baad — delivery ke baad map/details button bilkul nahi.
+  const canTrack =
+    order.status === 'paid' &&
+    ful !== 'cancelled' &&
+    !delivered &&
+    (order.picked_up_at != null || ful === 'out_for_delivery');
   const stepIdx = TRACK_STEPS.findIndex((s) => s.key === ful);
   const count = order.items.reduce((s, l) => s + (l.qty || 0), 0);
   const subtotal = order.subtotal ?? order.items.reduce((s, l) => s + l.unit * l.qty, 0);
@@ -614,11 +662,14 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
           <View style={[styles.ordPulse, { backgroundColor: ftone.fg }]} />
           <Text style={[styles.ordStripText, { color: ftone.fg }]} numberOfLines={2}>
             {cancelled
-              ? 'Cancelled by the shop — refund ho jayega'
+              ? 'Cancelled by the shop — refund will be issued'
               : `${ftone.label} • ${count} item${count === 1 ? '' : 's'}`}
           </Text>
         </View>
       )}
+      {order.rider && order.rider_accepted_at ? (
+        <OrderRiderCard rider={order.rider} delivered={delivered} />
+      ) : null}
       {order.offer_name ? (
         <View style={[styles.ordStrip, { backgroundColor: '#E9F5EC' }]}>
           <Text style={[styles.ordStripText, { color: '#1E4D2B' }]} numberOfLines={2}>
@@ -676,7 +727,7 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
             </View>
         </View>
 
-        {order.status === 'paid' && !cancelled && (
+        {order.status === 'paid' && !cancelled && !delivered && (
           <View style={styles.track}>
             {TRACK_STEPS.map((s, i) => {
               const done = stepIdx >= 0 && i <= stepIdx;
@@ -700,9 +751,7 @@ function OrderCard({ order }: { order: ApiHistoryOrder }) {
             onPress={() =>
               router.push({ pathname: '/order/[id]/tracking', params: { id: String(order.id) } })
             }>
-            <Text style={styles.trackBtnText}>
-              {ful === 'delivered' ? 'View delivery details' : 'Track rider live'}
-            </Text>
+            <Text style={styles.trackBtnText}>Track rider live</Text>
             <Text style={styles.trackBtnArrow}>›</Text>
           </Pressable>
         )}
@@ -1170,6 +1219,21 @@ export default function HomeScreen() {
     if (key === 'orders') loadOrders();
   }, [loadOrders]);
 
+  // Tracking screen delivery ke baad pending 'past' chhodta hai — home
+  // wapas focus hote hi seedha Orders → Delivered tab khule.
+  useFocusEffect(
+    useCallback(() => {
+      const pending = consumePendingOrdersTab();
+      if (!pending) return;
+      setOrdersTab(pending);
+      if (tabRef.current === 'orders') {
+        void loadOrders(true);
+      } else {
+        switchTab('orders');
+      }
+    }, [switchTab, loadOrders]),
+  );
+
   // Push token — login ke baad backend ko do (order status pushes ke liye).
   // Status Profile me dikhta hai taaki pata chale token gaya ya kahan atka.
   const [pushState, setPushState] = useState<'checking' | 'on' | 'off'>('checking');
@@ -1221,12 +1285,6 @@ export default function HomeScreen() {
   const switchTabRef = useRef(switchTab);
   switchTabRef.current = switchTab;
   useEffect(() => {
-    // Cold start — app band thi, notification tap pe khuli.
-    const pending = consumePendingOrdersTab();
-    if (pending) {
-      switchTabRef.current('orders');
-      setOrdersTab(pending);
-    }
     const recv = addPushReceivedListener(() => {
       loadOrders(true);
     });
@@ -1615,9 +1673,9 @@ export default function HomeScreen() {
       if (removed.length > 0) {
         const unique = [...new Set(removed)];
         showAlert(
-          lines.length === removed.length ? 'Cart khali ho gaya' : 'Menu updated',
-          `"${unique.join('", "')}" ab available nahi hai — cart se hata diya.${
-            lines.length === removed.length ? ' Kuch aur add karke dobara try karo.' : ' Baaki items check karke Proceed dobara dabao.'
+          lines.length === removed.length ? 'Your cart is now empty' : 'Menu updated',
+          `"${unique.join('", "')}" is no longer available and was removed from your cart.${
+            lines.length === removed.length ? ' Add something else and try again.' : ' Review the remaining items and tap Proceed again.'
           }`,
           'warning',
         );
@@ -1637,7 +1695,7 @@ export default function HomeScreen() {
     if (total < liveMin) {
       const deliveryHint =
         liveMode === 'distance'
-          ? `delivery ₹${liveBase} se (distance ke hisab se) extra`
+          ? `delivery ₹${liveBase} plus a distance-based charge`
           : `delivery ₹${liveCharge} extra`;
       showAlert(
         `Minimum order ₹${liveMin}`,
@@ -2132,8 +2190,8 @@ export default function HomeScreen() {
                   {paidOrders.length === 0
                     ? 'Your delicious orders will appear here.'
                     : ordersTab === 'active'
-                      ? 'Sab order deliver ho gaye — naya order karo!'
-                      : 'Delivered orders yaha dikhenge.'}
+                      ? 'All orders delivered — place a new order!'
+                      : 'Delivered orders will appear here.'}
                 </Text>
                 {paidOrders.length === 0 && (
                   <Pressable
@@ -2446,7 +2504,7 @@ export default function HomeScreen() {
             <View style={styles.sheetFoot}>
             <Text style={styles.gateHint}>
               {shopCfg.deliveryMode === 'distance'
-                ? `Min food order ₹${shopCfg.minOrder} + delivery ₹${shopCfg.deliveryBase} se (distance ke hisab se) • Within ${radiusLabel(shopCfg.radiusM)} of the shop`
+                ? `Min food order ₹${shopCfg.minOrder} + delivery ₹${shopCfg.deliveryBase} plus a distance-based charge • Within ${radiusLabel(shopCfg.radiusM)} of the shop`
                 : `Min food order ₹${shopCfg.minOrder} + ₹${shopCfg.deliveryCharge} delivery • Within ${radiusLabel(shopCfg.radiusM)} of the shop`}
             </Text>
             {!deliveryKnown ? (
@@ -2932,6 +2990,38 @@ const styles = StyleSheet.create({
   ordStrip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 9 },
   ordPulse: { width: 9, height: 9, borderRadius: 5 },
   ordStripText: { flex: 1, fontSize: 13, fontFamily: Fonts.bodyExtra },
+  ordRider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 16,
+    marginTop: 12,
+    backgroundColor: Brand.creamRich,
+    borderWidth: 1,
+    borderColor: Brand.bone,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  ordRiderAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Brand.terracotta,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ordRiderAvatarText: { color: Brand.white, fontSize: 14, fontFamily: Fonts.bodyExtra },
+  ordRiderName: { fontSize: 13.5, color: Brand.espresso, fontFamily: Fonts.bodyBold },
+  ordRiderMeta: { marginTop: 1, fontSize: 11.5, color: Brand.stone, fontFamily: Fonts.body },
+  ordRiderCall: {
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Brand.bone,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  ordRiderCallText: { fontSize: 11.5, color: Brand.espresso, fontFamily: Fonts.bodyExtra },
   ordBody: { padding: 16, gap: 10 },
   ordItems: { gap: 10, marginTop: 2 },
   ordItemRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },

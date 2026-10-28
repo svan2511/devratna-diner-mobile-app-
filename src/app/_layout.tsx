@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Platform, Text, TextInput } from 'react-native';
+import { LogBox, Platform, Text, TextInput } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -15,6 +15,7 @@ import {
 import { AuthProvider } from '@/context/AuthContext';
 import { CartProvider } from '@/context/CartContext';
 import { AppSplash } from '@/components/app-splash';
+import '@/lib/rider-location';
 import { getInitialNotificationData } from '@/lib/push';
 import {
   isOrderPush,
@@ -22,6 +23,13 @@ import {
   ordersTabFromPushData,
   setPendingOrdersTab,
 } from '@/lib/notify-target';
+
+// Known expo-router dev-only warning (expo/expo#49378); fixed in SDK 58.
+if (__DEV__) {
+  LogBox.ignoreLogs([
+    "Can't perform a React state update on a component that hasn't mounted yet",
+  ]);
+}
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 

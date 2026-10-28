@@ -179,6 +179,7 @@ export type ApiHistoryOrder = {
   rider_assigned_at?: string | null;
   rider_accepted_at?: string | null;
   picked_up_at?: string | null;
+  arrived_at?: string | null;
   created_at: string | null;
   paid_at?: string | null;
   ready_at?: string | null;
@@ -200,6 +201,7 @@ export type ApiOrderTracking = {
   rider_location: ApiRiderLocation | null;
   distance_to_customer_m: number | null;
   eta_minutes: number | null;
+  arrived: boolean;
   is_stale: boolean;
 };
 

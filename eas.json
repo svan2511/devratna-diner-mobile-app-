@@ -14,7 +14,12 @@
     },
     "production": {
       "autoIncrement": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://devratna-apis.onrender.com/api/v1",
+        "EXPO_PUBLIC_SHOP_LAT": "30.2710150",
+        "EXPO_PUBLIC_SHOP_LNG": "77.9926317"
+      }
     }
   },
   "submit": {

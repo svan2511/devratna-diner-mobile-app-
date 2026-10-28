@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  AppState,
   Linking,
   Platform,
   Pressable,
@@ -21,7 +23,12 @@ import {
   type ApiRiderAssignments,
   type ApiRiderOrder,
 } from '@/lib/api';
-import { registerPushTokenDetailed } from '@/lib/push';
+import { addPushReceivedListener, registerPushTokenDetailed } from '@/lib/push';
+import {
+  startRiderLocationTracking,
+  stopRiderLocationTracking,
+  type RiderTrackingMode,
+} from '@/lib/rider-location';
 import { useAuth } from '@/context/AuthContext';
 
 const POLL_MS = 10000;
@@ -49,12 +56,18 @@ export default function RiderScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [alert, setAlert] = useState<AppAlertData | null>(null);
+  const [trackingMode, setTrackingMode] = useState<RiderTrackingMode | null>(null);
+  const [appStateTick, setAppStateTick] = useState(0);
   const deniedRef = useRef(false);
   const pushTokenRef = useRef<string | null>(null);
 
   const activeOrder = data?.active_order ?? null;
   const activeOrderId = activeOrder?.id ?? null;
   const activeStatus = activeOrder?.fulfillment_status ?? null;
+  const liveTrackingMode =
+    activeOrderId == null || activeStatus === 'delivered' || activeStatus === 'cancelled'
+      ? null
+      : trackingMode;
 
   const showAlert = useCallback((title: string, message: string, type: AppAlertData['type'] = 'info') => {
     setAlert({ title, message, type });
@@ -131,31 +144,58 @@ export default function RiderScreen() {
     })();
   }, [token]);
 
-  // Foreground GPS only (MVP): rider app khula ho tabhi breadcrumbs jate hain.
+  // Naya assignment push aate hi dashboard turant refresh — 10s poll ka wait nahi.
   useEffect(() => {
-    if (!token || activeOrderId == null) return;
-    if (activeStatus === 'delivered') return;
+    const recv = addPushReceivedListener(() => {
+      void load(true);
+    });
+    return () => recv?.remove();
+  }, [load]);
 
-    let sub: Location.LocationSubscription | null = null;
+  // Settings se wapas aane par permission dobara check karo — "Allow all the
+  // time" karte hi background task start ho jaye, app restart na karna pade.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setAppStateTick((n) => n + 1);
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Live location background task me chalti hai, taaki Maps kholne par bhi
+  // customer ko rider dikhta rahe. Background permission na mile to foreground
+  // watcher fallback chalta hai (app khula rehne tak).
+  useEffect(() => {
+    if (!token || activeOrderId == null || activeStatus === 'delivered' || activeStatus === 'cancelled') {
+      void stopRiderLocationTracking();
+      deniedRef.current = false;
+      return;
+    }
+
     let cancelled = false;
+    let sub: Location.LocationSubscription | null = null;
     let lastSent = 0;
 
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
+    void (async () => {
+      const mode = await startRiderLocationTracking(token, activeOrderId);
+      if (cancelled) return;
+      setTrackingMode(mode);
+
+      if (mode === 'denied') {
         if (!deniedRef.current) {
           deniedRef.current = true;
           showAlert(
             'Location permission needed',
-            'Customer ko live rider location dikhane ke liye location allow karo.',
+            'Allow location so customers can see your live rider location.',
             'warning',
           );
         }
         return;
       }
-      if (cancelled) return;
 
-      sub = await Location.watchPositionAsync(
+      deniedRef.current = false;
+      if (mode === 'background') return;
+
+      const nextSub = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
           timeInterval: 10000,
@@ -170,18 +210,26 @@ export default function RiderScreen() {
               latitude: pos.coords.latitude,
               longitude: pos.coords.longitude,
               accuracy_m:
-                typeof pos.coords.accuracy === 'number' ? Math.round(pos.coords.accuracy) : null,
+                typeof pos.coords.accuracy === 'number'
+                  ? Math.min(10000, Math.round(pos.coords.accuracy))
+                  : null,
             })
             .catch(() => {});
         },
       );
+
+      if (cancelled) {
+        nextSub.remove();
+        return;
+      }
+      sub = nextSub;
     })();
 
     return () => {
       cancelled = true;
       sub?.remove();
     };
-  }, [token, activeOrderId, activeStatus, showAlert]);
+  }, [token, activeOrderId, activeStatus, showAlert, appStateTick]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -194,18 +242,38 @@ export default function RiderScreen() {
       if (!token || !activeOrder || busy) return;
       setBusy(true);
       try {
+        let mapsUrl: string | null = null;
+        let pickupMode: RiderTrackingMode | null = null;
         if (action === 'accept') await api.acceptRide(token, activeOrder.id);
-        if (action === 'pickup') await api.pickupRide(token, activeOrder.id);
-        if (action === 'deliver') await api.deliverRide(token, activeOrder.id);
+        if (action === 'pickup') {
+          const res = await api.pickupRide(token, activeOrder.id);
+          // Maps kholne se pehle background tracking on karo — warna app
+          // background hote hi customer ki live location ruk jaati hai.
+          pickupMode = await startRiderLocationTracking(token, activeOrder.id);
+          setTrackingMode(pickupMode);
+          mapsUrl = pickupMode === 'background' ? res.order.maps_url : null;
+        }
+        if (action === 'deliver') {
+          await api.deliverRide(token, activeOrder.id);
+          await stopRiderLocationTracking();
+          setTrackingMode(null);
+        }
         await load(true);
+        if (mapsUrl) void Linking.openURL(mapsUrl);
         showAlert(
-          action === 'deliver' ? 'Delivery complete' : 'Updated',
           action === 'deliver'
-            ? 'Order delivered mark ho gaya. Shukriya!'
+            ? 'Delivery complete'
+            : action === 'pickup' && pickupMode !== 'background'
+              ? 'Order picked up'
+              : 'Updated',
+          action === 'deliver'
+            ? 'Order marked as delivered. Thank you!'
             : action === 'pickup'
-              ? 'Order picked up - customer ko live track dikh raha hai.'
-              : 'Order accept ho gaya.',
-          'success',
+              ? pickupMode === 'background'
+                ? 'Order picked up — maps opened and the customer can see your live location.'
+                : 'Order picked up. Background location is off — set Location to "Allow all the time", then tap Open maps. Otherwise live tracking stops when the app goes to the background.'
+              : 'Order accepted.',
+          action === 'pickup' && pickupMode !== 'background' ? 'warning' : 'success',
         );
       } catch (e) {
         if (e instanceof SessionExpiredError) {
@@ -251,7 +319,23 @@ export default function RiderScreen() {
   };
 
   const openMaps = () => {
-    if (activeOrder?.maps_url) void Linking.openURL(activeOrder.maps_url);
+    const url = activeOrder?.maps_url;
+    if (!url) return;
+
+    if (liveTrackingMode === 'background') {
+      void Linking.openURL(url);
+      return;
+    }
+
+    Alert.alert(
+      'Live tracking will stop',
+      'Opening Maps sends the app to the background. Set Location to "Allow all the time" in Settings, otherwise the customer will not see your live location.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Settings', onPress: () => void Linking.openSettings() },
+        { text: 'Open anyway', onPress: () => void Linking.openURL(url) },
+      ],
+    );
   };
 
   return (
@@ -314,8 +398,8 @@ export default function RiderScreen() {
               </View>
               <Text style={styles.profileHint}>
                 {data.rider.is_online
-                  ? 'Online ho - naya delivery assign hote hi notification aayega.'
-                  : 'Offline ho - admin tabhi assign karega jab tum online ho.'}
+                  ? 'You are online — you will get a notification when a new delivery is assigned.'
+                  : 'You are offline — the admin can assign you only when you are online.'}
               </Text>
             </View>
 
@@ -343,7 +427,7 @@ export default function RiderScreen() {
                   <Text style={styles.address}>{activeOrder.delivery_address}</Text>
                 ) : null}
                 {activeOrder.distance_m != null ? (
-                  <Text style={styles.distance}>Shop se {activeOrder.distance_m}m</Text>
+                  <Text style={styles.distance}>{activeOrder.distance_m}m from the shop</Text>
                 ) : null}
 
                 <View style={styles.itemsBox}>
@@ -366,6 +450,21 @@ export default function RiderScreen() {
                     <Text style={styles.contactText}>Open maps</Text>
                   </Pressable>
                 </View>
+
+                {activeOrder.fulfillment_status !== 'delivered' &&
+                liveTrackingMode !== null &&
+                liveTrackingMode !== 'background' ? (
+                  <View style={styles.locationWarn}>
+                    <Text style={styles.locationWarnText}>
+                      {liveTrackingMode === 'denied'
+                        ? 'Location is off — the customer cannot see your live location.'
+                        : 'Background location is off — live tracking will stop when Maps opens.'}
+                    </Text>
+                    <Pressable style={styles.locationWarnBtn} onPress={() => void Linking.openSettings()}>
+                      <Text style={styles.locationWarnAction}>Fix location</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
 
                 {activeOrder.fulfillment_status !== 'delivered' ? (
                   <View style={styles.actionCol}>
@@ -396,8 +495,8 @@ export default function RiderScreen() {
                     )}
                     {activeOrder.rider_accepted_at && !activeOrder.picked_up_at ? (
                       <Text style={styles.stepHint}>
-                        Customer ka phone / address upar diya hai. Food pickup ke baad Order picked
-                        up dabao.
+                        Customer phone and address are shown above. Tap Order picked up after
+                        collecting the food.
                       </Text>
                     ) : null}
                   </View>
@@ -407,10 +506,6 @@ export default function RiderScreen() {
               <View style={styles.emptyCard}>
                 <Text style={styles.emptyGlyph}>--</Text>
                 <Text style={styles.emptyTitle}>No active delivery</Text>
-                <Text style={styles.emptyText}>
-                  Naya order assign hote hi yaha dikhega. App foreground me rakho, auto-refresh chal
-                  raha hai.
-                </Text>
               </View>
             )}
 
@@ -598,6 +693,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   contactText: { fontSize: 12, color: Brand.espresso, fontFamily: Fonts.bodyBold },
+  locationWarn: {
+    marginTop: 12,
+    backgroundColor: '#FFF3D6',
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+  },
+  locationWarnText: {
+    color: '#7A4B00',
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: Fonts.bodyMed,
+  },
+  locationWarnBtn: { alignSelf: 'flex-start' },
+  locationWarnAction: { color: Brand.terracotta, fontSize: 12, fontFamily: Fonts.bodyBold },
   actionCol: { marginTop: 14 },
   primaryBtn: {
     backgroundColor: Brand.terracotta,
@@ -629,14 +739,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: Brand.espresso,
     fontFamily: Fonts.display,
-  },
-  emptyText: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 20,
-    color: Brand.stone,
-    textAlign: 'center',
-    fontFamily: Fonts.body,
   },
   historyCard: {
     marginTop: 2,
